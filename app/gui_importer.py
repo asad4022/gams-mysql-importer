@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 import threading
 import traceback
 from collections.abc import Callable
@@ -10,10 +11,12 @@ from tkinter import END, MULTIPLE, Listbox, StringVar, Tk, messagebox
 from tkinter import ttk
 
 import pandas as pd
+from sqlalchemy.exc import OperationalError
 
 from .db import DatabaseConfig, MySQLRepository
-from .exporter import ExportError, save_long_csv, save_preview_csv
-from .runner import GAMSRunError, run_gams_model
+from .exporter import ExportArtifacts, ExportError, export_import_jobs, save_preview_csv, validate_gams_symbol_name
+from .models import ImportJob, MaterializedImportJob
+from .runner import GAMSRunError, GAMSRunResult, run_gams_model
 from .utils import DATA_DIR, GAMS_DIR, PROJECT_ROOT, configure_logging, load_db_config
 
 
@@ -23,16 +26,19 @@ class MySQLToGAMSApp:
     def __init__(self, root: Tk) -> None:
         self.root = root
         self.root.title("MySQL to GAMS Importer")
-        self.root.geometry("1100x720")
-        self.root.minsize(900, 620)
+        self.root.geometry("1280x860")
+        self.root.minsize(1040, 700)
 
         self.logger = configure_logging(PROJECT_ROOT / "data" / "app.log")
         self.preview_df: pd.DataFrame = pd.DataFrame()
         self.repo: MySQLRepository | None = None
+        self.import_jobs: list[ImportJob] = []
 
         self.status_var = StringVar(value="Load configuration to begin.")
         self.table_var = StringVar()
         self.max_rows_var = StringVar(value="10")
+        self.symbol_name_var = StringVar()
+        self.where_var = StringVar()
 
         self._build_layout()
         self._load_configuration()
@@ -41,7 +47,7 @@ class MySQLToGAMSApp:
         main_frame = ttk.Frame(self.root, padding=12)
         main_frame.pack(fill="both", expand=True)
 
-        controls = ttk.LabelFrame(main_frame, text="Data Selection", padding=12)
+        controls = ttk.LabelFrame(main_frame, text="Current Import Job", padding=12)
         controls.pack(fill="x")
 
         ttk.Button(
@@ -50,46 +56,92 @@ class MySQLToGAMSApp:
 
         ttk.Label(controls, text="Table").grid(row=0, column=1, sticky="w")
         self.table_combo = ttk.Combobox(
-            controls, textvariable=self.table_var, state="readonly", width=35
+            controls, textvariable=self.table_var, state="readonly", width=28
         )
         self.table_combo.grid(row=0, column=2, padx=(6, 10), pady=6, sticky="ew")
         self.table_combo.bind("<<ComboboxSelected>>", self._on_table_selected)
 
-        ttk.Label(controls, text="Max rows").grid(row=0, column=3, sticky="w")
-        self.max_rows_entry = ttk.Entry(controls, textvariable=self.max_rows_var, width=12)
-        self.max_rows_entry.grid(row=0, column=4, padx=(6, 10), pady=6, sticky="w")
+        ttk.Label(controls, text="Output symbol").grid(row=0, column=3, sticky="w")
+        self.symbol_name_entry = ttk.Entry(
+            controls, textvariable=self.symbol_name_var, width=24
+        )
+        self.symbol_name_entry.grid(row=0, column=4, padx=(6, 10), pady=6, sticky="ew")
 
-        ttk.Label(controls, text="Columns").grid(row=1, column=0, sticky="nw", pady=(10, 4))
+        ttk.Label(controls, text="Max rows").grid(row=0, column=5, sticky="w")
+        self.max_rows_entry = ttk.Entry(controls, textvariable=self.max_rows_var, width=12)
+        self.max_rows_entry.grid(row=0, column=6, padx=(6, 0), pady=6, sticky="w")
+
+        ttk.Label(controls, text="Filter / WHERE").grid(row=1, column=0, sticky="w", pady=(8, 4))
+        self.where_entry = ttk.Entry(controls, textvariable=self.where_var)
+        self.where_entry.grid(
+            row=1, column=1, columnspan=6, padx=(6, 0), pady=(8, 4), sticky="ew"
+        )
+
+        ttk.Label(controls, text="Columns").grid(row=2, column=0, sticky="nw", pady=(10, 4))
         self.columns_listbox = Listbox(
             controls,
             selectmode=MULTIPLE,
             exportselection=False,
-            width=40,
-            height=10,
+            width=42,
+            height=11,
         )
         self.columns_listbox.grid(
-            row=1, column=1, columnspan=2, padx=(6, 10), pady=(10, 6), sticky="nsew"
+            row=2, column=1, columnspan=3, padx=(6, 10), pady=(10, 6), sticky="nsew"
         )
 
         list_scrollbar = ttk.Scrollbar(
             controls, orient="vertical", command=self.columns_listbox.yview
         )
-        list_scrollbar.grid(row=1, column=3, pady=(10, 6), sticky="nsw")
+        list_scrollbar.grid(row=2, column=4, pady=(10, 6), sticky="nsw")
         self.columns_listbox.config(yscrollcommand=list_scrollbar.set)
 
         actions_frame = ttk.Frame(controls)
-        actions_frame.grid(row=1, column=4, padx=(6, 0), pady=(10, 6), sticky="ne")
-        ttk.Button(actions_frame, text="Preview Data", command=self.preview_data).pack(
+        actions_frame.grid(row=2, column=5, columnspan=2, padx=(12, 0), pady=(10, 6), sticky="ne")
+        ttk.Button(actions_frame, text="Preview Current Selection", command=self.preview_data).pack(
             fill="x", pady=(0, 8)
         )
-        ttk.Button(
-            actions_frame, text="Export and Run GAMS", command=self.export_and_run
-        ).pack(fill="x")
+        ttk.Button(actions_frame, text="Add Import Job", command=self.add_import_job).pack(
+            fill="x", pady=(0, 8)
+        )
+        ttk.Button(actions_frame, text="Remove Selected Job", command=self.remove_selected_job).pack(
+            fill="x", pady=(0, 8)
+        )
+        ttk.Button(actions_frame, text="Export Basket and Run GAMS", command=self.export_and_run).pack(
+            fill="x"
+        )
 
         controls.columnconfigure(2, weight=1)
-        controls.rowconfigure(1, weight=1)
+        controls.columnconfigure(4, weight=1)
+        controls.rowconfigure(2, weight=1)
 
-        preview_frame = ttk.LabelFrame(main_frame, text="Preview", padding=12)
+        basket_frame = ttk.LabelFrame(main_frame, text="Import Basket", padding=12)
+        basket_frame.pack(fill="x", pady=(12, 0))
+
+        self.basket_tree = ttk.Treeview(
+            basket_frame,
+            columns=("symbol", "table", "rows", "filter", "columns"),
+            show="headings",
+            height=7,
+        )
+        self.basket_tree.heading("symbol", text="Output Symbol")
+        self.basket_tree.heading("table", text="Source Table")
+        self.basket_tree.heading("rows", text="Max Rows")
+        self.basket_tree.heading("filter", text="Filter / WHERE")
+        self.basket_tree.heading("columns", text="Selected Columns")
+        self.basket_tree.column("symbol", width=180, anchor="w")
+        self.basket_tree.column("table", width=170, anchor="w")
+        self.basket_tree.column("rows", width=80, anchor="center")
+        self.basket_tree.column("filter", width=240, anchor="w")
+        self.basket_tree.column("columns", width=420, anchor="w")
+        self.basket_tree.pack(side="left", fill="x", expand=True)
+
+        basket_scrollbar = ttk.Scrollbar(
+            basket_frame, orient="vertical", command=self.basket_tree.yview
+        )
+        basket_scrollbar.pack(side="right", fill="y")
+        self.basket_tree.configure(yscrollcommand=basket_scrollbar.set)
+
+        preview_frame = ttk.LabelFrame(main_frame, text="Preview Of Current Selection", padding=12)
         preview_frame.pack(fill="both", expand=True, pady=(12, 0))
 
         self.preview_tree = ttk.Treeview(preview_frame, show="headings")
@@ -152,6 +204,9 @@ class MySQLToGAMSApp:
         if not table_name or self.repo is None:
             return
 
+        if not self.symbol_name_var.get().strip():
+            self.symbol_name_var.set(self._suggest_symbol_name(table_name))
+
         def task() -> list[str]:
             assert self.repo is not None
             return self.repo.list_columns(table_name)
@@ -170,22 +225,120 @@ class MySQLToGAMSApp:
         indices = self.columns_listbox.curselection()
         return [self.columns_listbox.get(index) for index in indices]
 
-    def preview_data(self) -> None:
+    def _suggest_symbol_name(self, table_name: str) -> str:
+        """Derive a safe default output symbol name from the selected table."""
+        parts = [part.lower() for part in re.split(r"[^A-Za-z0-9]+", table_name) if part]
+        if not parts:
+            return "importedData"
+        symbol_name = parts[0] + "".join(part.title() for part in parts[1:]) + "Data"
+        if symbol_name[0].isdigit():
+            symbol_name = f"_{symbol_name}"
+        return symbol_name
+
+    def _build_import_job(self, require_symbol: bool = True) -> ImportJob:
+        """Build and validate the current GUI form as an import job."""
         if self.repo is None:
-            messagebox.showerror("Connection Required", "Connect to the database first.")
-            return
+            raise ExportError("Connect to the database before building import jobs.")
 
         table_name = self.table_var.get().strip()
+        if not table_name:
+            raise ExportError("Select a source table before adding an import job.")
+
         selected_columns = self._selected_columns()
+        if not selected_columns:
+            raise ExportError("Select at least one column before adding an import job.")
+
         try:
             max_rows = int(self.max_rows_var.get().strip())
-        except ValueError:
-            messagebox.showerror("Invalid Input", "Max rows must be a positive integer.")
+        except ValueError as exc:
+            raise ExportError("Max rows must be a positive integer.") from exc
+        if max_rows <= 0:
+            raise ExportError("Max rows must be a positive integer.")
+
+        symbol_name = self.symbol_name_var.get().strip()
+        if not symbol_name and not require_symbol:
+            symbol_name = self._suggest_symbol_name(table_name)
+            self.symbol_name_var.set(symbol_name)
+        symbol_name = validate_gams_symbol_name(symbol_name)
+
+        return ImportJob(
+            table_name=table_name,
+            selected_columns=selected_columns,
+            max_rows=max_rows,
+            symbol_name=symbol_name,
+            where_clause=self.where_var.get().strip(),
+        )
+
+    def add_import_job(self) -> None:
+        """Add the current selection to the import basket."""
+        try:
+            job = self._build_import_job()
+        except ExportError as exc:
+            messagebox.showerror("Import Job Error", str(exc))
+            return
+
+        if any(existing.symbol_name == job.symbol_name for existing in self.import_jobs):
+            messagebox.showerror(
+                "Import Job Error",
+                f"An import job with symbol name '{job.symbol_name}' is already in the basket.",
+            )
+            return
+
+        self.import_jobs.append(job)
+        self._refresh_basket()
+        self.status_var.set(
+            f"Added import job '{job.symbol_name}' from table '{job.table_name}'."
+        )
+
+    def remove_selected_job(self) -> None:
+        """Remove the currently selected import job from the basket."""
+        selection = self.basket_tree.selection()
+        if not selection:
+            messagebox.showerror(
+                "Remove Import Job",
+                "Select an import job in the basket before removing it.",
+            )
+            return
+
+        indices = sorted((int(item_id) for item_id in selection), reverse=True)
+        for index in indices:
+            del self.import_jobs[index]
+        self._refresh_basket()
+        self.status_var.set("Removed selected import job(s) from the basket.")
+
+    def _refresh_basket(self) -> None:
+        """Refresh the import basket treeview."""
+        self.basket_tree.delete(*self.basket_tree.get_children())
+        for index, job in enumerate(self.import_jobs):
+            self.basket_tree.insert(
+                "",
+                END,
+                iid=str(index),
+                values=(
+                    job.symbol_name,
+                    job.table_name,
+                    job.max_rows,
+                    job.where_clause or "(none)",
+                    ", ".join(job.selected_columns),
+                ),
+            )
+
+    def preview_data(self) -> None:
+        """Preview the current GUI selection without adding it to the basket."""
+        try:
+            job = self._build_import_job(require_symbol=False)
+        except ExportError as exc:
+            messagebox.showerror("Preview Error", str(exc))
             return
 
         def task() -> pd.DataFrame:
             assert self.repo is not None
-            dataframe = self.repo.fetch_preview(table_name, selected_columns, max_rows)
+            dataframe = self.repo.fetch_preview(
+                job.table_name,
+                job.selected_columns,
+                job.max_rows,
+                job.where_clause,
+            )
             save_preview_csv(dataframe, DATA_DIR)
             return dataframe
 
@@ -200,33 +353,73 @@ class MySQLToGAMSApp:
         self._run_in_background(task, on_success, "Fetching preview data...")
 
     def export_and_run(self) -> None:
-        if self.preview_df.empty:
-            messagebox.showerror(
-                "Preview Required",
-                "Preview data before exporting and running the GAMS model.",
-            )
+        """Export queued jobs, generate reusable GAMS symbols, and run the model."""
+        if self.repo is None:
+            messagebox.showerror("Connection Required", "Connect to the database first.")
             return
 
-        def task() -> Path:
-            save_preview_csv(self.preview_df, DATA_DIR)
-            long_csv = save_long_csv(self.preview_df, DATA_DIR)
-            model_path = GAMS_DIR / "model.gms"
-            run_gams_model(PROJECT_ROOT, model_path)
-            return long_csv
+        try:
+            queued_jobs = list(self.import_jobs)
+            if not queued_jobs:
+                queued_jobs = [self._build_import_job(require_symbol=False)]
+        except ExportError as exc:
+            messagebox.showerror("Export Error", str(exc))
+            return
 
-        def on_success(long_csv: Path) -> None:
+        def task() -> tuple[ExportArtifacts, GAMSRunResult]:
+            assert self.repo is not None
+            materialized_jobs: list[MaterializedImportJob] = []
+            for job in queued_jobs:
+                dataframe = self.repo.fetch_preview(
+                    job.table_name,
+                    job.selected_columns,
+                    job.max_rows,
+                    job.where_clause,
+                )
+                materialized_jobs.append(MaterializedImportJob(job=job, dataframe=dataframe))
+
+            artifacts = export_import_jobs(materialized_jobs, DATA_DIR, GAMS_DIR)
+            self.preview_df = materialized_jobs[0].dataframe
+            run_result = run_gams_model(PROJECT_ROOT, GAMS_DIR / "model.gms")
+            return artifacts, run_result
+
+        def on_success(result: tuple[ExportArtifacts, GAMSRunResult]) -> None:
+            artifacts, run_result = result
+            self._populate_preview(self.preview_df)
             self.status_var.set(
-                f"Exported long-format data to {long_csv} and ran GAMS successfully."
+                f"Exported {len(artifacts.symbol_names)} import job(s) and ran GAMS successfully."
             )
+            studio_note = (
+                "GAMS Studio was opened automatically on the model, listing, and GDX data files."
+                if run_result.studio_opened
+                else "GAMS Studio could not be opened automatically, but the GAMS artifacts were created successfully."
+            )
+            optimization_note = (
+                run_result.optimization_message + "\n\n"
+                if run_result.optimization_message
+                else ""
+            )
+            symbol_lines = "\n".join(f"- {symbol_name}(obs,col)" for symbol_name in artifacts.symbol_names)
             messagebox.showinfo(
                 "Export and Run Complete",
-                "Data exported successfully and GAMS completed without errors.",
+                "Queued SQL imports were exported successfully and GAMS completed without errors.\n\n"
+                f"{optimization_note}"
+                f"{studio_note}\n\n"
+                f"Primary backward-compatible symbol: data(obs,col) from '{artifacts.primary_symbol_name}'\n"
+                "Reusable imported symbols created in this run:\n"
+                f"{symbol_lines}\n\n"
+                f"GDX data: {run_result.gdx_file}\n"
+                f"Runtime include: {artifacts.generated_runtime_include}\n"
+                f"Symbol include: {artifacts.generated_symbol_include}\n"
+                f"Example consumer: {artifacts.generated_example_model}\n"
+                f"Listing file: {run_result.listing_file}\n"
+                f"Log file: {run_result.log_file}",
             )
 
         self._run_in_background(
             task,
             on_success,
-            "Exporting numeric data and running GAMS...",
+            "Exporting queued import jobs and running GAMS...",
         )
 
     def _populate_preview(self, dataframe: pd.DataFrame) -> None:
@@ -253,35 +446,62 @@ class MySQLToGAMSApp:
                 result = task()
             except ExportError as exc:
                 self.logger.warning("Export validation failed: %s", exc)
-                self.root.after(
-                    0,
-                    lambda: (
-                        self.status_var.set("Export validation failed."),
-                        messagebox.showerror("Export Error", str(exc)),
-                    ),
-                )
+                self._show_async_error("Export validation failed.", "Export Error", str(exc))
             except GAMSRunError as exc:
                 self.logger.error("GAMS run failed: %s", exc)
-                self.root.after(
-                    0,
-                    lambda: (
-                        self.status_var.set("GAMS execution failed."),
-                        messagebox.showerror("GAMS Error", str(exc)),
-                    ),
+                self._show_async_error("GAMS execution failed.", "GAMS Error", str(exc))
+            except OperationalError as exc:
+                self.logger.error("Database operation failed: %s\n%s", exc, traceback.format_exc())
+                friendly_message = self._format_database_error(exc)
+                self._show_async_error(
+                    "Database connection failed.",
+                    "Database Error",
+                    friendly_message,
                 )
             except Exception as exc:
                 self.logger.error("Unexpected error: %s\n%s", exc, traceback.format_exc())
-                self.root.after(
-                    0,
-                    lambda: (
-                        self.status_var.set("An unexpected error occurred."),
-                        messagebox.showerror("Application Error", str(exc)),
-                    ),
+                self._show_async_error(
+                    "An unexpected error occurred.",
+                    "Application Error",
+                    str(exc),
                 )
             else:
                 self.root.after(0, lambda: on_success(result))
 
         threading.Thread(target=worker, daemon=True).start()
+
+    def _show_async_error(self, status: str, title: str, message: str) -> None:
+        """Schedule a GUI error message from a worker thread."""
+        self.root.after(
+            0,
+            lambda status_text=status, dialog_title=title, dialog_message=message: (
+                self.status_var.set(status_text),
+                messagebox.showerror(dialog_title, dialog_message),
+            ),
+        )
+
+    def _format_database_error(self, error: OperationalError) -> str:
+        """Return a clearer GUI message for common MySQL connection failures."""
+        error_text = str(error)
+
+        if "getaddrinfo failed" in error_text:
+            return (
+                "The MySQL host name could not be resolved. "
+                "Check the 'host' value in config/db_config.json. "
+                "It may still contain a placeholder or an invalid server name."
+            )
+        if "Access denied" in error_text:
+            return (
+                "MySQL rejected the username or password. "
+                "Check the credentials in config/db_config.json."
+            )
+        if "Can't connect to MySQL server" in error_text:
+            return (
+                "Could not reach the MySQL server. Verify the host, port, network access, "
+                "and whether the database server is online."
+            )
+
+        return error_text
 
 
 def main() -> None:

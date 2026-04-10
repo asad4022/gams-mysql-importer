@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import re
 from dataclasses import dataclass
-from typing import Any
 
 import pandas as pd
 from sqlalchemy import create_engine, text
@@ -19,6 +18,22 @@ def quote_mysql_identifier(identifier: str) -> str:
     if not IDENTIFIER_PATTERN.match(identifier):
         raise ValueError(f"Unsafe MySQL identifier: {identifier!r}")
     return f"`{identifier.replace('`', '``')}`"
+
+
+def validate_where_clause(where_clause: str) -> str:
+    """Perform a conservative validation for a simple user-supplied SQL filter."""
+    normalized = where_clause.strip()
+    if not normalized:
+        return ""
+
+    forbidden_tokens = (";", "--", "/*", "*/", "\\")
+    if any(token in normalized for token in forbidden_tokens):
+        raise ValueError(
+            "The WHERE/filter text contains unsupported SQL control characters. "
+            "Use a simple filter expression only, without semicolons or comments."
+        )
+
+    return normalized
 
 
 @dataclass(slots=True)
@@ -88,7 +103,11 @@ class MySQLRepository:
             return list(rows)
 
     def fetch_preview(
-        self, table_name: str, selected_columns: list[str], max_rows: int
+        self,
+        table_name: str,
+        selected_columns: list[str],
+        max_rows: int,
+        where_clause: str = "",
     ) -> pd.DataFrame:
         """Fetch a limited preview from the selected table."""
         if max_rows <= 0:
@@ -108,7 +127,11 @@ class MySQLRepository:
         quoted_columns = ", ".join(
             quote_mysql_identifier(column_name) for column_name in selected_columns
         )
-        sql = text(f"SELECT {quoted_columns} FROM {quoted_table} LIMIT :max_rows")
+        validated_where = validate_where_clause(where_clause)
+        where_sql = f" WHERE {validated_where}" if validated_where else ""
+        sql = text(
+            f"SELECT {quoted_columns} FROM {quoted_table}{where_sql} LIMIT :max_rows"
+        )
         return pd.read_sql_query(sql, self.engine, params={"max_rows": int(max_rows)})
 
     def dispose(self) -> None:

@@ -70,4 +70,22 @@ def load_db_config() -> tuple[dict[str, Any], list[str]]:
             f"Database configuration is missing required keys: {', '.join(missing)}"
         )
 
+    placeholder_values = {
+        "host": {"host", "your-mysql-host"},
+        "database": {"your_database_name"},
+        "user": {"your_database_user"},
+        "password": {"your_password_here"},
+    }
+    invalid_fields = [
+        field_name
+        for field_name, placeholders in placeholder_values.items()
+        if str(config.get(field_name, "")).strip() in placeholders
+    ]
+    if invalid_fields:
+        raise ValueError(
+            "Database configuration still contains placeholder values for: "
+            + ", ".join(invalid_fields)
+            + ". Update config/db_config.json before connecting."
+        )
+
     return config, warnings

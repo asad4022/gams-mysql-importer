@@ -1,28 +1,52 @@
 # MySQL to GAMS Importer
 
-`gams-mysql-importer` is a Windows-oriented Python desktop application that lets a user connect to a MySQL database, inspect tables and columns, preview a bounded subset of rows, export numeric data into a GAMS-friendly long CSV format, and then launch a GAMS model automatically.
+`gams-mysql-importer` is a Windows-oriented Python desktop application that turns user-selected MySQL data into reusable GAMS symbols. The application lets a user queue one or more SQL import jobs, preview the current selection, export numeric columns into a professional GAMS handoff, run GAMS automatically, and inspect the resulting `.gdx`, listing, and log artifacts in GAMS Studio.
 
-The project is designed as a clean front-end around a GAMS Connect workflow. The Python GUI handles selection, validation, preview, export, and subprocess execution, while the GAMS model imports the exported CSV and performs a simple summary analysis.
+The current architecture supports two layers at the same time:
+
+- a backward-compatible primary symbol `data(obs,col)` for the first queued import job,
+- reusable named symbols such as `certificationData(obs,col)` and `laborCostData(obs,col)` that can be loaded later in arbitrary GAMS scripts.
+
+## Motivation And Problem Solved
+
+Traditional SQL-to-GAMS workflows often leave too much manual work between data selection and model execution:
+
+- SQL queries are edited by hand for each scenario,
+- imported data is tied too tightly to one specific GAMS script,
+- there is no stable artifact for later reuse in other models,
+- end users have limited confidence about what was imported and where it ended up.
+
+This project solves that by creating a repeatable bridge:
+
+- the user prepares imports interactively in a GUI,
+- the application exports named reusable symbols,
+- GAMS stores those symbols in `imported_data.gdx`,
+- later GAMS models can load the same symbols directly without rerunning the SQL logic manually.
 
 ## Project Purpose
 
-This repository provides a professional desktop front-end for workflows where database data must be inspected by a user before being passed into GAMS for optimization or analytical preprocessing. It is especially useful when:
+This repository provides a professional desktop front-end for workflows where SQL data must be curated interactively before being reused in GAMS for calculations, reporting, or optimization. It is useful when:
 
 - the user needs to browse tables and columns interactively,
-- only a selected subset of rows should be imported,
-- data should be exported in a controlled and reproducible format,
-- the final step should trigger a GAMS model automatically.
+- multiple import jobs should be prepared before the GAMS run,
+- imported data should be preserved as named reusable symbols,
+- the resulting symbols should be available in a `.gdx` database for later models,
+- optional demo optimization should remain available without constraining the broader workflow.
 
 ## Architecture Overview
 
 The application is split into small modules:
 
-- `app/gui_importer.py`: tkinter desktop window and user interaction flow.
-- `app/db.py`: SQLAlchemy and PyMySQL access layer for MySQL metadata and preview queries.
-- `app/exporter.py`: preview CSV export and conversion to the required `obs, column_name, value` long format.
-- `app/runner.py`: subprocess wrapper for calling GAMS.
+- `app/gui_importer.py`: tkinter desktop window, preview logic, and import basket workflow.
+- `app/db.py`: SQLAlchemy and PyMySQL access layer for MySQL metadata, previews, and simple filters.
+- `app/exporter.py`: multi-job export pipeline, GAMS symbol validation, CSV generation, and generated include files.
+- `app/models.py`: shared dataclasses for queued import jobs and generated artifacts.
+- `app/runner.py`: subprocess wrapper for calling GAMS and opening GAMS Studio.
 - `app/utils.py`: configuration loading and logging setup.
-- `gams/model.gms`: GAMS Connect model that imports the exported long CSV.
+- `gams/model.gms`: main GAMS entry point for generated imports, semantic mapping, and optional demo optimization.
+- `gams/import_mapping.gms`: semantic mapping from imported column names to optional model-ready parameters.
+- `gams/optimization_example.gms`: optional resource-allocation LP example using the mapped primary symbol.
+- `gams/example_use_imported_symbols.gms`: separate GAMS consumer script showing how imported symbols can be reused.
 
 High-level flow:
 
@@ -30,44 +54,65 @@ High-level flow:
 2. Connect to MySQL.
 3. Read available tables from `information_schema.tables`.
 4. Read column names from `information_schema.columns`.
-5. Preview user-selected data with a `LIMIT`.
-6. Save preview data to `data/exported_preview.csv`.
-7. Convert numeric columns to long format and save `data/exported_data_long.csv`.
-8. Call `gams gams/model.gms`.
+5. Preview the current import selection with a `LIMIT` and optional simple filter.
+6. Add one or more validated import jobs to the basket.
+7. On execution, fetch each queued job and export one long-format CSV per output symbol.
+8. Generate GAMS include files that declare and document the imported symbols for the current run.
+9. Run `gams gams/model.gms`.
+10. Save all imported symbols to `data/imported_data.gdx` for reuse in other GAMS scripts.
 
 ## Folder Structure
 
 ```text
 gams-mysql-importer/
-├── app/
-│   ├── __init__.py
-│   ├── db.py
-│   ├── exporter.py
-│   ├── gui_importer.py
-│   ├── runner.py
-│   └── utils.py
-├── config/
-│   └── db_config.example.json
-├── data/
-│   └── .gitkeep
-├── gams/
-│   └── model.gms
-├── scripts/
-│   ├── run_app.bat
-│   └── setup_windows.ps1
-├── tests/
-│   └── test_exporter.py
-├── .gitignore
-├── README.md
-└── requirements.txt
+|-- app/
+|   |-- __init__.py
+|   |-- __main__.py
+|   |-- db.py
+|   |-- exporter.py
+|   |-- gui_importer.py
+|   |-- models.py
+|   |-- runner.py
+|   `-- utils.py
+|-- config/
+|   `-- db_config.example.json
+|-- data/
+|   `-- .gitkeep
+|-- gams/
+|   |-- example_use_imported_symbols.gms
+|   |-- import_mapping.gms
+|   |-- model.gms
+|   |-- optimization_example.gms
+|   `-- sample_optimization_long.csv
+|-- scripts/
+|   |-- run_app.bat
+|   `-- setup_windows.ps1
+|-- tests/
+|   `-- test_exporter.py
+|-- .gitignore
+|-- README.md
+`-- requirements.txt
 ```
+
+Generated at runtime:
+
+- `data/import_jobs/<symbol>.csv`
+- `data/import_jobs_manifest.csv`
+- `data/imported_data.gdx`
+- `data/gams_run.lst`
+- `data/gams_run.log`
+- `gams/generated_import_runtime.gms`
+- `gams/generated_import_symbols.gms`
+- `gams/generated_unload_symbols.gms`
+- `gams/example_use_imported_symbols.gms` may be refreshed to reflect the current basket
 
 ## Prerequisites
 
 - Windows 10 or Windows 11
 - Python 3.11
 - Access to the target MySQL database
-- GAMS installed locally and accessible from the command line as `gams`
+- GAMS installed locally
+- A MySQL account with permission to read the selected tables
 
 ## Windows Setup
 
@@ -78,7 +123,20 @@ Set-ExecutionPolicy -Scope Process -ExecutionPolicy Bypass
 .\scripts\setup_windows.ps1
 ```
 
-This script creates a `.venv` virtual environment and installs dependencies from `requirements.txt`.
+This script creates a `.venv` virtual environment and installs dependencies from `requirements.txt`. It prefers Python 3.11 through the Windows `py` launcher and recreates `.venv` if the existing interpreter version is wrong.
+
+## Python Environment Setup
+
+The recommended local workflow is:
+
+```powershell
+cd C:\Users\Akhan\Desktop\gams-mysql-importer
+Set-ExecutionPolicy -Scope Process -ExecutionPolicy Bypass
+.\scripts\setup_windows.ps1
+.\.venv\Scripts\python.exe --version
+```
+
+You should see `Python 3.11.x`.
 
 ## Database Configuration
 
@@ -120,44 +178,311 @@ scripts\run_app.bat
 
 The window title is `MySQL to GAMS Importer`.
 
+## GUI Workflow
+
+1. Click `Connect to Database`.
+2. Choose the source table for the current import job.
+3. Select one or more columns.
+4. Provide:
+   - `Output symbol`
+   - `Max rows`
+   - optional `Filter / WHERE`
+5. Click `Preview Current Selection` if you want to inspect the current form.
+6. Click `Add Import Job` to place the current selection in the import basket.
+7. Repeat for additional tables or symbol names.
+8. Review the `Import Basket`.
+9. Click `Export Basket and Run GAMS`.
+
+Professional behavior of the basket:
+
+- each job has its own source table, selected columns, row limit, filter text, and output symbol,
+- the first queued job becomes the backward-compatible primary symbol `data(obs,col)`,
+- every queued job also produces its own reusable named symbol.
+
+## Generated Outputs And Artifacts
+
+The most important generated artifact is:
+
+- `data/imported_data.gdx`
+
+This is the GAMS-side handoff artifact for the whole run.
+
+Other important runtime outputs:
+
+- `data/exported_preview.csv`
+- `data/exported_data_long.csv`
+- `data/import_jobs/<symbol>.csv`
+- `data/import_jobs_manifest.csv`
+- `data/gams_run.lst`
+- `data/gams_run.log`
+- `gams/generated_import_runtime.gms`
+- `gams/generated_import_symbols.gms`
+- `gams/generated_unload_symbols.gms`
+
+Meaning of the key files:
+
+- `imported_data.gdx`: reusable GAMS database containing all imported symbols
+- `generated_import_runtime.gms`: generated import declarations and Connect block for the current run
+- `generated_import_symbols.gms`: helper include for later `$gdxin` / `$load`
+- `generated_unload_symbols.gms`: generated unload list used by the main model
+- `gams_run.lst`: listing file for inspecting execution details
+- `gams_run.log`: log file for a concise execution trace
+- `import_jobs_manifest.csv`: basket summary for the current run
+
 ## How GAMS Is Called
 
-When the user previews data and then chooses `Export and Run GAMS`, the application:
+When the user executes the basket, the application:
 
-- writes `data/exported_preview.csv`,
-- writes `data/exported_data_long.csv`,
+- writes `data/exported_preview.csv` for the first queued job,
+- writes `data/exported_data_long.csv` for the first queued job to preserve backward compatibility,
+- writes one long-format CSV per queued symbol under `data/import_jobs/`,
+- generates GAMS helper include files for the current run,
 - runs the equivalent of:
 
 ```powershell
 gams gams/model.gms
 ```
 
-If GAMS is missing from `PATH` or the run fails, the application shows a friendly error dialog with execution details.
+On a successful run, the application also creates:
+
+- `data/imported_data.gdx`
+- `data/gams_run.lst`
+- `data/gams_run.log`
+
+GAMS Studio is opened automatically when available.
+
+## How To Inspect `imported_data.gdx`
+
+There are two recommended inspection paths:
+
+1. Open the run in GAMS Studio after export. The application tries to do this automatically.
+2. Open `data/imported_data.gdx` in GAMS Studio manually and inspect:
+   - symbol names
+   - dimensions
+   - domain labels
+   - loaded values
+
+This is the best way to confirm exactly what the SQL import produced before using the data in downstream models.
 
 ## Data Export Rules
 
-- Preview data is always saved to `data/exported_preview.csv`.
-- Only numeric columns are exported for GAMS.
-- Numeric data is transformed into long format with exactly these columns:
+- Preview data is saved to `data/exported_preview.csv` for the first queued job.
+- The backward-compatible legacy export is still written to `data/exported_data_long.csv` for the first queued job.
+- Each queued import job is exported as a long-format numeric CSV:
   - `obs`
   - `column_name`
   - `value`
-- Observation numbering starts at `1`.
-- If the selected preview contains no numeric columns, the GUI shows an error and GAMS is not launched.
+- Observation numbering starts at `1` independently for each import job.
+- Only numeric columns are exported into GAMS parameters.
+- If a queued job contains no numeric columns in the fetched result, the export fails clearly before GAMS runs.
 
-## Current Assumptions and Limitations
+## How To Use Imported SQL Data In Your Own GAMS Model
 
-- Table and column names are validated conservatively for safe identifier quoting.
-- The GUI is intended for moderate interactive preview sizes rather than very large extracts.
-- The GAMS model currently computes a simple mean by numeric column and displays imported dimensions.
+This is the core reusable bridge.
+
+### How imported symbols are named
+
+Each queued import job has an explicit `Output symbol` in the GUI. If the user chooses:
+
+- `certificationData`
+- `laborCostData`
+
+then the GAMS run creates reusable symbols:
+
+- `certificationData(obs,col)`
+- `laborCostData(obs,col)`
+
+The first queued job is also exposed as:
+
+- `data(obs,col)`
+
+for backward compatibility with the earlier workflow and the optional semantic mapping demo.
+
+### Where `imported_data.gdx` is written
+
+The reusable GDX file is written to:
+
+- `data/imported_data.gdx`
+
+This file contains:
+
+- the backward-compatible `data(obs,col)` symbol,
+- one named symbol per queued import job,
+- the supporting observation and column sets for those symbols,
+- the optional semantic mapping and demo optimization symbols.
+
+### How to load symbols using `$gdxin` and `$load`
+
+The recommended path is to include the generated helper:
+
+```gams
+$include "gams/generated_import_symbols.gms"
+```
+
+That generated include:
+
+- declares the current imported symbols,
+- points to `data/imported_data.gdx`,
+- loads the current symbols automatically.
+
+You can also load them manually:
+
+```gams
+Sets
+    obs__productsData(*)
+    col__productsData(*);
+
+Parameters
+    productsData(obs__productsData<, col__productsData<);
+
+$gdxin data/imported_data.gdx
+$load productsData
+$gdxin
+
+display productsData;
+```
+
+The same pattern works for two or more imported symbols:
+
+```gams
+Sets
+    obs__productsData(*)
+    col__productsData(*)
+    obs__resourcesData(*)
+    col__resourcesData(*);
+
+Parameters
+    productsData(obs__productsData<, col__productsData<)
+    resourcesData(obs__resourcesData<, col__resourcesData<);
+
+$gdxin data/imported_data.gdx
+$load productsData
+$load resourcesData
+$gdxin
+
+display productsData, resourcesData;
+```
+
+### How to use `execute_load`
+
+If you prefer runtime loading:
+
+```gams
+execute_load 'data/imported_data.gdx', certificationData, laborCostData;
+```
+
+This is useful in models that open and close GDX files procedurally.
+
+### How to inspect symbols in GAMS Studio
+
+After a successful run, the application opens GAMS Studio on:
+
+- the main model,
+- the listing file,
+- the generated GDX file.
+
+You can inspect the symbols interactively in GAMS Studio to confirm:
+
+- symbol names,
+- dimensions,
+- loaded records,
+- set labels for observations and columns.
+
+### How to extend the approach for custom optimization models
+
+1. Queue and export the SQL data you need from the GUI.
+2. Open `data/imported_data.gdx` or include `gams/generated_import_symbols.gms`.
+3. Load the symbols relevant to your own model.
+4. Build semantic parameters, index structures, or direct model coefficients from those imported symbols.
+5. Reuse the current `gams/import_mapping.gms` and `gams/optimization_example.gms` only as optional examples, not as the required architecture.
+
+The important design principle is that imported SQL data is now preserved as named reusable GAMS symbols first, and only then optionally interpreted for a particular optimization example.
+
+## Backward Compatibility With `data(obs,col)`
+
+To preserve earlier behavior, the first queued import job is also written as:
+
+- `data(obs,col)`
+
+This is useful for:
+
+- existing scripts built around the earlier generic pipeline,
+- the optional semantic mapping layer,
+- the optional demo optimization example.
+
+So the current system provides both:
+
+- one stable generic primary symbol for compatibility,
+- multiple named symbols for reusable downstream modeling.
+
+## Optional Semantic Mapping And Demo Optimization
+
+The repository still includes the earlier demo optimization as a professional example, but it is now optional.
+
+- `gams/import_mapping.gms` maps selected column names from the primary symbol `data(obs,col)` into:
+  - `profit(obs)`
+  - `capacity(obs)`
+  - `cost(obs)`
+  - `demand(obs)`
+- `gams/optimization_example.gms` solves a small linear resource-allocation model if the required mapped fields are present.
+- If the required mapped fields are not present, generic import still succeeds and the optimization example is skipped gracefully.
+
+## Test Without The GUI
+
+A small example CSV is included at `gams/sample_optimization_long.csv`.
+
+To test the semantic mapping and optimization example quickly:
+
+```powershell
+Copy-Item .\gams\sample_optimization_long.csv .\data\exported_data_long.csv -Force
+& 'C:\GAMS\53\gams.exe' .\gams\model.gms
+```
+
+For the full reusable-symbol workflow, use the GUI so that the generated import basket files are created.
+
+## Testing And Verification
+
+Recommended local checks:
+
+```powershell
+python -m compileall app tests
+python -m pytest tests/test_exporter.py
+```
+
+Practical runtime verification:
+
+1. Start the GUI.
+2. Queue one or more import jobs.
+3. Run `Export Basket and Run GAMS`.
+4. Confirm that:
+   - `data/imported_data.gdx` exists
+   - `data/gams_run.lst` exists
+   - `data/gams_run.log` exists
+   - generated helper files exist under `gams/`
+5. Open or include `gams/generated_import_symbols.gms` from another GAMS script.
+
+## Current Assumptions And Limitations
+
+- Imported GAMS symbols are currently numeric parameter-style symbols in the standardized form `<symbolName>(obs,col)`.
+- The current `Filter / WHERE` box supports only a conservative simple SQL filter expression; it is not a full SQL editor.
+- The first queued job is treated as the backward-compatible primary symbol `data(obs,col)`.
+- The semantic mapping and demo optimization still operate only on that primary symbol.
+- Direct automatic inference of richer structures such as `parameter cost(i,t)` is not yet implemented.
+- Import jobs with nonnumeric selected results cannot currently become GAMS parameters.
 - Local verification of the GAMS run requires a working GAMS installation on the machine.
-- The application previews first, then exports from the previewed data currently held in memory.
 
-## Future Extension Ideas
+## Notes On Security And Configuration Handling
 
-- Persist the last selected table and columns between sessions.
-- Add schema selection for multi-schema MySQL installations.
-- Support richer type-aware export mappings beyond numeric long-format output.
-- Add progress indicators for larger preview operations.
-- Add automated integration tests against a disposable MySQL instance.
-- Generate GDX or alternative GAMS input formats when required by a larger model.
+- Real credentials belong only in `config/db_config.json`, which is ignored by git.
+- `config/db_config.example.json` should keep placeholder values only.
+- The filter box is intentionally conservative to reduce SQL misuse risk.
+- Generated runtime files and exported data artifacts are ignored in `.gitignore` because they are transient per run.
+- If credentials were ever pasted into logs or chats, rotate them before using the project further.
+
+## Roadmap / Future Improvements
+
+- Infer richer index/value structures automatically when a job clearly has identifier columns plus one value column.
+- Externalize semantic mapping to JSON or YAML configuration instead of the current GAMS include.
+- Add per-job preview snapshots inside the basket.
+- Add saved import basket templates for repeated data workflows.
+- Add integration tests against a disposable MySQL instance.

@@ -16,7 +16,21 @@ config/db_config.json
 # Logs and exported data
 data/*.csv
 data/*.log
+data/*.lst
+data/*.lxi
+data/*.gms
+data/*.gdx
+data/import_jobs/
 !data/.gitkeep
+
+# Generated GAMS helper files created by the exporter
+gams/generated_import_runtime.gms
+gams/generated_import_symbols.gms
+gams/generated_unload_symbols.gms
+gams/*.log
+gams/*.lst
+gams/*.lxi
+model.lst
 
 # OS and editor artifacts
 .DS_Store
