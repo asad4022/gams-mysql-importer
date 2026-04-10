@@ -88,6 +88,7 @@ gams-mysql-importer/
 |   |-- run_app.bat
 |   `-- setup_windows.ps1
 |-- tests/
+|   |-- test_db.py
 |   `-- test_exporter.py
 |-- .gitignore
 |-- README.md
@@ -186,7 +187,7 @@ The window title is `MySQL to GAMS Importer`.
 4. Provide:
    - `Output symbol`
    - `Max rows`
-   - optional `Filter / WHERE`
+   - optional `Filter expression`
 5. Optionally assign semantic roles to selected columns:
    - `index`
    - `profit`
@@ -205,7 +206,7 @@ The window title is `MySQL to GAMS Importer`.
    - whether the current selection includes at least one numeric column
 8. Click `Preview Current Selection` if you want to inspect the current form.
 9. Click `Add Import Job` to place the current selection in the import basket.
-10. Use `Edit Selected Job`, `Save Changes To Selected Job`, or `Duplicate Selected Job` to refine basket entries without rebuilding them from scratch.
+10. Use `Load Selected Item Into Form`, `Update Selected Basket Item`, or `Duplicate Selected Basket Item` to refine basket entries without rebuilding them from scratch.
 11. Repeat for additional tables or symbol names.
 12. Review the `Import Basket`.
 13. Click `Export Basket and Run GAMS`.
@@ -310,9 +311,81 @@ This is the best way to confirm exactly what the SQL import produced before usin
 - Reserved names such as `data`, `obs`, `col`, `profit`, and `capacity` cannot be used as output symbols.
 - The GUI validates table and column choices before adding or updating a basket item.
 - The `Filter / WHERE` field is intentionally conservative:
+- The `Filter expression` field is intentionally conservative:
   - use only a simple filter expression such as `Anno = 2023` or `profit > 0`
   - semicolons, SQL comments, joins, unions, and full SQL statements are blocked
 - The pre-run validation step checks that each queued import job still has at least one numeric column selected before GAMS is started.
+
+## End-To-End Example
+
+The example below shows the full Phase 1 plus Phase 2 workflow in one pass.
+
+### In the GUI
+
+1. Click `Connect to Database`.
+2. Select table `PRODUCTS`.
+3. Select columns `sku`, `profit`, and `capacity`.
+4. Enter:
+   - `Output symbol`: `productsData`
+   - `Max rows`: `25`
+   - `Filter expression`: `profit > 0`
+5. Assign semantic roles:
+   - `sku` -> `index`
+   - `profit` -> `profit`
+   - `capacity` -> `capacity`
+6. Confirm in `Pre-Run Readiness` that:
+   - the selected table is `PRODUCTS`
+   - the selected columns are correct
+   - the symbol name is `productsData`
+   - numeric columns are present
+7. Click `Add Import Job`.
+8. Click `Export Basket and Run GAMS`.
+
+### What the run creates
+
+After a successful run, the most important outputs are:
+
+- `data/imported_data.gdx`
+- `gams/generated_import_symbols.gms`
+- `gams/generated_semantic_mapping.gms`
+- `data/gams_run.lst`
+- `data/gams_run.log`
+
+On the GAMS side, this single basket item gives you:
+
+- `data(obs,col)` because it is the first queued job
+- `productsData(obs__productsData,col__productsData)` as the reusable named symbol
+- `profit__productsData(obs__productsData)`
+- `capacity__productsData(obs__productsData)`
+
+### In a downstream GAMS script
+
+You can then load and use the generated symbols in a separate model:
+
+```gams
+Sets
+    obs__productsData(*)
+    col__productsData(*);
+
+Parameters
+    productsData(obs__productsData<, col__productsData<)
+    profit__productsData(obs__productsData<)
+    capacity__productsData(obs__productsData<);
+
+$gdxin data/imported_data.gdx
+$load productsData
+$load profit__productsData
+$load capacity__productsData
+$gdxin
+
+display productsData, profit__productsData, capacity__productsData;
+```
+
+This is the intended bridge:
+
+- the GUI prepares a safe import basket,
+- GAMS receives reusable symbols,
+- downstream GAMS code loads those symbols from `imported_data.gdx` without repeating the SQL selection logic.
 
 ## How To Use Imported SQL Data In Your Own GAMS Model
 

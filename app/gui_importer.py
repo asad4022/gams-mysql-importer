@@ -76,7 +76,7 @@ class MySQLToGAMSApp:
         self.max_rows_entry = ttk.Entry(controls, textvariable=self.max_rows_var, width=12)
         self.max_rows_entry.grid(row=0, column=6, padx=(6, 0), pady=6, sticky="w")
 
-        ttk.Label(controls, text="Filter / WHERE").grid(row=1, column=0, sticky="w", pady=(8, 4))
+        ttk.Label(controls, text="Filter expression").grid(row=1, column=0, sticky="w", pady=(8, 4))
         self.where_entry = ttk.Entry(controls, textvariable=self.where_var)
         self.where_entry.grid(
             row=1, column=1, columnspan=6, padx=(6, 0), pady=(8, 4), sticky="ew"
@@ -146,13 +146,13 @@ class MySQLToGAMSApp:
         ttk.Button(actions_frame, text="Add Import Job", command=self.add_import_job).pack(
             fill="x", pady=(0, 8)
         )
-        ttk.Button(actions_frame, text="Save Changes To Selected Job", command=self.update_selected_job).pack(
+        ttk.Button(actions_frame, text="Update Selected Basket Item", command=self.update_selected_job).pack(
             fill="x", pady=(0, 8)
         )
-        ttk.Button(actions_frame, text="Edit Selected Job", command=self.edit_selected_job).pack(
+        ttk.Button(actions_frame, text="Load Selected Item Into Form", command=self.edit_selected_job).pack(
             fill="x", pady=(0, 8)
         )
-        ttk.Button(actions_frame, text="Duplicate Selected Job", command=self.duplicate_selected_job).pack(
+        ttk.Button(actions_frame, text="Duplicate Selected Basket Item", command=self.duplicate_selected_job).pack(
             fill="x", pady=(0, 8)
         )
         ttk.Button(actions_frame, text="Remove Selected Job", command=self.remove_selected_job).pack(
@@ -178,7 +178,7 @@ class MySQLToGAMSApp:
         self.basket_tree.heading("symbol", text="Output Symbol")
         self.basket_tree.heading("table", text="Source Table")
         self.basket_tree.heading("rows", text="Max Rows")
-        self.basket_tree.heading("filter", text="Filter / WHERE")
+        self.basket_tree.heading("filter", text="Filter expression")
         self.basket_tree.heading("columns", text="Selected Columns")
         self.basket_tree.heading("roles", text="Semantic Roles")
         self.basket_tree.column("symbol", width=180, anchor="w")
