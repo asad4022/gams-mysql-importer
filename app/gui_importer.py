@@ -13,7 +13,7 @@ from tkinter import ttk
 import pandas as pd
 from sqlalchemy.exc import OperationalError
 
-from .db import DatabaseConfig, MySQLRepository
+from .db import DatabaseConfig, MySQLRepository, validate_where_clause
 from .exporter import ExportArtifacts, ExportError, export_import_jobs, save_preview_csv, validate_gams_symbol_name
 from .models import ImportJob, MaterializedImportJob, SEMANTIC_ROLES
 from .runner import GAMSRunError, GAMSRunResult, run_gams_model
@@ -34,6 +34,8 @@ class MySQLToGAMSApp:
         self.repo: MySQLRepository | None = None
         self.import_jobs: list[ImportJob] = []
         self.current_role_assignments: dict[str, str] = {}
+        self.current_numeric_columns: set[str] = set()
+        self.editing_job_index: int | None = None
 
         self.status_var = StringVar(value="Load configuration to begin.")
         self.table_var = StringVar()
@@ -43,6 +45,7 @@ class MySQLToGAMSApp:
         self.semantic_role_var = StringVar(value="index")
 
         self._build_layout()
+        self._bind_form_state()
         self._load_configuration()
 
     def _build_layout(self) -> None:
@@ -143,6 +146,15 @@ class MySQLToGAMSApp:
         ttk.Button(actions_frame, text="Add Import Job", command=self.add_import_job).pack(
             fill="x", pady=(0, 8)
         )
+        ttk.Button(actions_frame, text="Save Changes To Selected Job", command=self.update_selected_job).pack(
+            fill="x", pady=(0, 8)
+        )
+        ttk.Button(actions_frame, text="Edit Selected Job", command=self.edit_selected_job).pack(
+            fill="x", pady=(0, 8)
+        )
+        ttk.Button(actions_frame, text="Duplicate Selected Job", command=self.duplicate_selected_job).pack(
+            fill="x", pady=(0, 8)
+        )
         ttk.Button(actions_frame, text="Remove Selected Job", command=self.remove_selected_job).pack(
             fill="x", pady=(0, 8)
         )
@@ -182,6 +194,38 @@ class MySQLToGAMSApp:
         )
         basket_scrollbar.pack(side="right", fill="y")
         self.basket_tree.configure(yscrollcommand=basket_scrollbar.set)
+        self.basket_tree.bind("<<TreeviewSelect>>", self._on_basket_selection_changed)
+
+        diagnostics_frame = ttk.Frame(main_frame)
+        diagnostics_frame.pack(fill="x", pady=(12, 0))
+
+        readiness_frame = ttk.LabelFrame(diagnostics_frame, text="Pre-Run Readiness", padding=12)
+        readiness_frame.pack(side="left", fill="both", expand=True, padx=(0, 6))
+        self.readiness_tree = ttk.Treeview(
+            readiness_frame,
+            columns=("field", "value"),
+            show="headings",
+            height=7,
+        )
+        self.readiness_tree.heading("field", text="Field")
+        self.readiness_tree.heading("value", text="Current Value")
+        self.readiness_tree.column("field", width=170, anchor="w")
+        self.readiness_tree.column("value", width=480, anchor="w")
+        self.readiness_tree.pack(fill="both", expand=True)
+
+        results_frame = ttk.LabelFrame(diagnostics_frame, text="Post-Run Results", padding=12)
+        results_frame.pack(side="left", fill="both", expand=True, padx=(6, 0))
+        self.results_tree = ttk.Treeview(
+            results_frame,
+            columns=("artifact", "path"),
+            show="headings",
+            height=7,
+        )
+        self.results_tree.heading("artifact", text="Artifact")
+        self.results_tree.heading("path", text="Location")
+        self.results_tree.column("artifact", width=180, anchor="w")
+        self.results_tree.column("path", width=470, anchor="w")
+        self.results_tree.pack(fill="both", expand=True)
 
         preview_frame = ttk.LabelFrame(main_frame, text="Preview Of Current Selection", padding=12)
         preview_frame.pack(fill="both", expand=True, pady=(12, 0))
@@ -203,6 +247,8 @@ class MySQLToGAMSApp:
             self.root, textvariable=self.status_var, anchor="w", padding=(12, 8)
         )
         status_bar.pack(fill="x")
+        self._refresh_readiness_panel()
+        self._populate_results_panel([])
 
     def _load_configuration(self) -> None:
         try:
@@ -217,6 +263,77 @@ class MySQLToGAMSApp:
             self.logger.exception("Failed to load configuration")
             messagebox.showerror("Configuration Error", str(exc))
             self.status_var.set("Configuration could not be loaded.")
+
+    def _bind_form_state(self) -> None:
+        """Refresh readiness information whenever the form changes."""
+        for variable in (
+            self.table_var,
+            self.max_rows_var,
+            self.symbol_name_var,
+            self.where_var,
+            self.semantic_role_var,
+        ):
+            variable.trace_add("write", self._on_form_field_changed)
+
+    def _on_form_field_changed(self, *_args: object) -> None:
+        """Handle entry and combobox edits from traced tkinter variables."""
+        self._refresh_readiness_panel()
+
+    def _refresh_readiness_panel(self) -> None:
+        """Show a concise readiness summary for the current form state."""
+        self.readiness_tree.delete(*self.readiness_tree.get_children())
+
+        selected_columns = self._selected_columns()
+        filter_text = self.where_var.get().strip()
+        filter_status = "Valid simple filter"
+        if filter_text:
+            try:
+                validate_where_clause(filter_text)
+            except ValueError as exc:
+                filter_status = f"Needs attention: {exc}"
+
+        readiness_rows = [
+            ("Selected table", self.table_var.get().strip() or "(not selected)"),
+            ("Selected columns", ", ".join(selected_columns) or "(none)"),
+            ("Output symbol", self.symbol_name_var.get().strip() or "(not set)"),
+            ("Row limit", self.max_rows_var.get().strip() or "(not set)"),
+            ("Filter", filter_text or "(none)"),
+            ("Filter status", filter_status),
+            (
+                "Numeric columns present",
+                self._format_numeric_presence(selected_columns),
+            ),
+            (
+                "Edit mode",
+                f"Editing basket item #{self.editing_job_index + 1}"
+                if self.editing_job_index is not None
+                else "Adding a new basket item",
+            ),
+        ]
+
+        for index, row in enumerate(readiness_rows):
+            self.readiness_tree.insert("", END, iid=str(index), values=row)
+
+    def _populate_results_panel(self, rows: list[tuple[str, str]]) -> None:
+        """Display the most recent exported artifact locations."""
+        self.results_tree.delete(*self.results_tree.get_children())
+        if not rows:
+            rows = [("No run yet", "Export basket data and run GAMS to populate artifacts.")]
+        for index, row in enumerate(rows):
+            self.results_tree.insert("", END, iid=str(index), values=row)
+
+    def _format_numeric_presence(self, selected_columns: list[str]) -> str:
+        """Summarize whether the current selection includes numeric columns."""
+        if not selected_columns:
+            return "No columns selected yet"
+        numeric_selected = [column for column in selected_columns if column in self.current_numeric_columns]
+        if numeric_selected:
+            return f"Yes: {', '.join(numeric_selected)}"
+        if self.table_var.get().strip() and self.current_numeric_columns:
+            return "No: selected columns are currently nonnumeric"
+        if self.table_var.get().strip():
+            return "Unknown until table metadata is loaded"
+        return "Unknown until a table is selected"
 
     def connect_to_database(self) -> None:
         if not hasattr(self, "config"):
@@ -249,18 +366,27 @@ class MySQLToGAMSApp:
         if not self.symbol_name_var.get().strip():
             self.symbol_name_var.set(self._suggest_symbol_name(table_name))
         self.current_role_assignments.clear()
+        self.current_numeric_columns.clear()
+        self._refresh_readiness_panel()
 
-        def task() -> list[str]:
+        def task() -> tuple[list[str], list[str]]:
             assert self.repo is not None
-            return self.repo.list_columns(table_name)
+            return (
+                self.repo.list_columns(table_name),
+                self.repo.list_numeric_columns(table_name),
+            )
 
-        def on_success(columns: list[str]) -> None:
+        def on_success(result: tuple[list[str], list[str]]) -> None:
+            columns, numeric_columns = result
             self.columns_listbox.delete(0, END)
             for column_name in columns:
                 self.columns_listbox.insert(END, column_name)
+            self.current_numeric_columns = set(numeric_columns)
             self._refresh_role_assignments()
+            self._refresh_readiness_panel()
             self.status_var.set(
-                f"Loaded {len(columns)} column(s) for table '{table_name}'."
+                f"Loaded {len(columns)} column(s) for table '{table_name}'. "
+                f"{len(numeric_columns)} numeric column(s) detected."
             )
 
         self._run_in_background(task, on_success, f"Loading columns for {table_name}...")
@@ -287,10 +413,25 @@ class MySQLToGAMSApp:
         table_name = self.table_var.get().strip()
         if not table_name:
             raise ExportError("Select a source table before adding an import job.")
+        available_tables = set(self.table_combo.cget("values") or [])
+        if available_tables and table_name not in available_tables:
+            raise ExportError(
+                f"Table '{table_name}' is not available in the connected database. "
+                "Reload the table list and choose a valid source table."
+            )
 
         selected_columns = self._selected_columns()
         if not selected_columns:
             raise ExportError("Select at least one column before adding an import job.")
+        available_columns = {
+            self.columns_listbox.get(index) for index in range(self.columns_listbox.size())
+        }
+        unknown_columns = [column for column in selected_columns if column not in available_columns]
+        if unknown_columns:
+            raise ExportError(
+                "One or more selected columns are no longer available in the current table: "
+                + ", ".join(unknown_columns)
+            )
 
         try:
             max_rows = int(self.max_rows_var.get().strip())
@@ -303,14 +444,27 @@ class MySQLToGAMSApp:
         if not symbol_name and not require_symbol:
             symbol_name = self._suggest_symbol_name(table_name)
             self.symbol_name_var.set(symbol_name)
-        symbol_name = validate_gams_symbol_name(symbol_name)
+        try:
+            symbol_name = validate_gams_symbol_name(symbol_name)
+        except ExportError as exc:
+            raise ExportError(
+                f"{exc} Example safe symbol names: productsData, laborCostData, importedProfit."
+            ) from exc
+
+        where_clause = self.where_var.get().strip()
+        try:
+            validated_where = validate_where_clause(where_clause)
+        except ValueError as exc:
+            raise ExportError(
+                f"{exc} Keep the filter to a simple expression such as Anno = 2023 or profit > 0."
+            ) from exc
 
         return ImportJob(
             table_name=table_name,
             selected_columns=selected_columns,
             max_rows=max_rows,
             symbol_name=symbol_name,
-            where_clause=self.where_var.get().strip(),
+            where_clause=validated_where,
             semantic_roles={
                 column_name: role
                 for column_name, role in self.current_role_assignments.items()
@@ -332,6 +486,7 @@ class MySQLToGAMSApp:
         for column_name in selected_columns:
             self.current_role_assignments[column_name] = role
         self._refresh_role_assignments()
+        self._refresh_readiness_panel()
         self.status_var.set(
             f"Assigned role '{role}' to {len(selected_columns)} selected column(s)."
         )
@@ -349,6 +504,7 @@ class MySQLToGAMSApp:
         for column_name in selected_columns:
             self.current_role_assignments.pop(column_name, None)
         self._refresh_role_assignments()
+        self._refresh_readiness_panel()
         self.status_var.set("Cleared semantic roles from selected column(s).")
 
     def _refresh_role_assignments(self, _event: object | None = None) -> None:
@@ -364,6 +520,7 @@ class MySQLToGAMSApp:
                     self.current_role_assignments.get(column_name, "(none)"),
                 ),
             )
+        self._refresh_readiness_panel()
 
     def add_import_job(self) -> None:
         """Add the current selection to the import basket."""
@@ -381,9 +538,104 @@ class MySQLToGAMSApp:
             return
 
         self.import_jobs.append(job)
+        self.editing_job_index = None
         self._refresh_basket()
+        self._refresh_readiness_panel()
+        self.logger.info("Added import job '%s' from table '%s'.", job.symbol_name, job.table_name)
         self.status_var.set(
             f"Added import job '{job.symbol_name}' from table '{job.table_name}'."
+        )
+
+    def update_selected_job(self) -> None:
+        """Persist current form values into the selected basket item."""
+        target_index = self.editing_job_index
+        if target_index is None:
+            selection = self.basket_tree.selection()
+            if len(selection) != 1:
+                messagebox.showerror(
+                    "Update Import Job",
+                    "Select exactly one basket item, then edit it before saving changes.",
+                )
+                return
+            target_index = int(selection[0])
+
+        try:
+            job = self._build_import_job()
+        except ExportError as exc:
+            messagebox.showerror("Update Import Job", str(exc))
+            return
+
+        duplicate_symbols = [
+            existing.symbol_name
+            for index, existing in enumerate(self.import_jobs)
+            if index != target_index and existing.symbol_name == job.symbol_name
+        ]
+        if duplicate_symbols:
+            messagebox.showerror(
+                "Update Import Job",
+                f"Another basket item already uses symbol name '{job.symbol_name}'.",
+            )
+            return
+
+        self.import_jobs[target_index] = job
+        self.editing_job_index = target_index
+        self._refresh_basket()
+        self.basket_tree.selection_set(str(target_index))
+        self._refresh_readiness_panel()
+        self.logger.info("Updated import job '%s' at basket index %d.", job.symbol_name, target_index)
+        self.status_var.set(
+            f"Updated basket item '{job.symbol_name}' from table '{job.table_name}'."
+        )
+
+    def edit_selected_job(self) -> None:
+        """Load a basket item back into the form for editing."""
+        selection = self.basket_tree.selection()
+        if len(selection) != 1:
+            messagebox.showerror(
+                "Edit Import Job",
+                "Select exactly one basket item before editing it.",
+            )
+            return
+
+        index = int(selection[0])
+        self._load_job_into_form(index)
+        self.status_var.set(
+            f"Loaded basket item '{self.import_jobs[index].symbol_name}' into the form for editing."
+        )
+
+    def duplicate_selected_job(self) -> None:
+        """Duplicate the selected basket item with a unique symbol name."""
+        selection = self.basket_tree.selection()
+        if len(selection) != 1:
+            messagebox.showerror(
+                "Duplicate Import Job",
+                "Select exactly one basket item before duplicating it.",
+            )
+            return
+
+        index = int(selection[0])
+        source_job = self.import_jobs[index]
+        duplicated_symbol = self._generate_unique_symbol_name(source_job.symbol_name)
+        duplicated_job = ImportJob(
+            table_name=source_job.table_name,
+            selected_columns=list(source_job.selected_columns),
+            max_rows=source_job.max_rows,
+            symbol_name=duplicated_symbol,
+            where_clause=source_job.where_clause,
+            semantic_roles=dict(source_job.semantic_roles),
+        )
+        self.import_jobs.append(duplicated_job)
+        new_index = len(self.import_jobs) - 1
+        self._refresh_basket()
+        self.basket_tree.selection_set(str(new_index))
+        self._load_job_into_form(new_index)
+        self.logger.info(
+            "Duplicated import job '%s' as '%s'.",
+            source_job.symbol_name,
+            duplicated_symbol,
+        )
+        self.status_var.set(
+            f"Duplicated basket item '{source_job.symbol_name}' as '{duplicated_symbol}'."
         )
 
     def remove_selected_job(self) -> None:
@@ -399,8 +651,75 @@ class MySQLToGAMSApp:
         indices = sorted((int(item_id) for item_id in selection), reverse=True)
         for index in indices:
             del self.import_jobs[index]
+        if self.editing_job_index in indices:
+            self.editing_job_index = None
+        elif self.editing_job_index is not None:
+            removed_before = sum(1 for index in indices if index < self.editing_job_index)
+            self.editing_job_index -= removed_before
         self._refresh_basket()
+        self._refresh_readiness_panel()
+        self.logger.info("Removed %d import job(s) from the basket.", len(indices))
         self.status_var.set("Removed selected import job(s) from the basket.")
+
+    def _load_job_into_form(self, index: int) -> None:
+        """Load a queued basket item back into the editable form."""
+        job = self.import_jobs[index]
+        self.editing_job_index = index
+        self.table_var.set(job.table_name)
+        self.symbol_name_var.set(job.symbol_name)
+        self.max_rows_var.set(str(job.max_rows))
+        self.where_var.set(job.where_clause)
+        self.current_role_assignments = dict(job.semantic_roles)
+
+        if self.repo is None:
+            self._refresh_readiness_panel()
+            return
+
+        def task() -> tuple[list[str], list[str]]:
+            assert self.repo is not None
+            return (
+                self.repo.list_columns(job.table_name),
+                self.repo.list_numeric_columns(job.table_name),
+            )
+
+        def on_success(result: tuple[list[str], list[str]]) -> None:
+            columns, numeric_columns = result
+            self.columns_listbox.delete(0, END)
+            for column_name in columns:
+                self.columns_listbox.insert(END, column_name)
+            self.current_numeric_columns = set(numeric_columns)
+            index_lookup = {column_name: pos for pos, column_name in enumerate(columns)}
+            for column_name in job.selected_columns:
+                if column_name in index_lookup:
+                    self.columns_listbox.selection_set(index_lookup[column_name])
+            self._refresh_role_assignments()
+            self._refresh_readiness_panel()
+
+        self._run_in_background(
+            task,
+            on_success,
+            f"Loading basket item '{job.symbol_name}' into the current form...",
+        )
+
+    def _generate_unique_symbol_name(self, base_symbol: str) -> str:
+        """Create a basket-safe symbol name for duplicated jobs."""
+        candidate_base = f"{base_symbol}Copy"
+        existing = {job.symbol_name for job in self.import_jobs}
+        candidate = candidate_base
+        suffix = 2
+        while candidate in existing:
+            candidate = f"{candidate_base}{suffix}"
+            suffix += 1
+        return candidate
+
+    def _on_basket_selection_changed(self, _event: object) -> None:
+        """Reflect current basket selection in the status bar."""
+        selection = self.basket_tree.selection()
+        if len(selection) == 1:
+            job = self.import_jobs[int(selection[0])]
+            self.status_var.set(
+                f"Selected basket item '{job.symbol_name}' from table '{job.table_name}'."
+            )
 
     def _refresh_basket(self) -> None:
         """Refresh the import basket treeview."""
@@ -445,6 +764,9 @@ class MySQLToGAMSApp:
         def on_success(dataframe: pd.DataFrame) -> None:
             self.preview_df = dataframe
             self._populate_preview(dataframe)
+            self._populate_results_panel(
+                [("Preview CSV", str(DATA_DIR / "exported_preview.csv"))]
+            )
             self.status_var.set(
                 f"Preview loaded with {len(dataframe)} row(s). "
                 "Preview CSV saved to data/exported_preview.csv."
@@ -462,6 +784,7 @@ class MySQLToGAMSApp:
             queued_jobs = list(self.import_jobs)
             if not queued_jobs:
                 queued_jobs = [self._build_import_job(require_symbol=False)]
+            self._validate_jobs_ready_for_run(queued_jobs)
         except ExportError as exc:
             messagebox.showerror("Export Error", str(exc))
             return
@@ -470,6 +793,14 @@ class MySQLToGAMSApp:
             assert self.repo is not None
             materialized_jobs: list[MaterializedImportJob] = []
             for job in queued_jobs:
+                self.logger.info(
+                    "Fetching import job '%s' from table '%s' with %d selected column(s), max_rows=%d, filter=%r",
+                    job.symbol_name,
+                    job.table_name,
+                    len(job.selected_columns),
+                    job.max_rows,
+                    job.where_clause,
+                )
                 dataframe = self.repo.fetch_preview(
                     job.table_name,
                     job.selected_columns,
@@ -486,6 +817,28 @@ class MySQLToGAMSApp:
         def on_success(result: tuple[ExportArtifacts, GAMSRunResult]) -> None:
             artifacts, run_result = result
             self._populate_preview(self.preview_df)
+            self._populate_results_panel(
+                [
+                    ("Preview CSV", str(artifacts.preview_csv)),
+                    ("Legacy long CSV", str(artifacts.legacy_long_csv)),
+                    ("Import job CSV folder", str(artifacts.job_directory)),
+                    ("Import manifest", str(artifacts.manifest_csv)),
+                    ("Generated runtime include", str(artifacts.generated_runtime_include)),
+                    ("Generated symbol include", str(artifacts.generated_symbol_include)),
+                    (
+                        "Generated semantic declarations",
+                        str(artifacts.generated_semantic_declarations_include),
+                    ),
+                    (
+                        "Generated semantic mapping",
+                        str(artifacts.generated_semantic_mapping_include),
+                    ),
+                    ("Generated example consumer", str(artifacts.generated_example_model)),
+                    ("Listing file", str(run_result.listing_file)),
+                    ("Log file", str(run_result.log_file)),
+                    ("GDX handoff", str(run_result.gdx_file)),
+                ]
+            )
             self.status_var.set(
                 f"Exported {len(artifacts.symbol_names)} import job(s) and ran GAMS successfully."
             )
@@ -510,8 +863,11 @@ class MySQLToGAMSApp:
                 f"{symbol_lines}\n\n"
                 "Assigned semantic roles are available in the generated semantic mapping include.\n\n"
                 f"GDX data: {run_result.gdx_file}\n"
+                f"Import job folder: {artifacts.job_directory}\n"
+                f"Manifest: {artifacts.manifest_csv}\n"
                 f"Runtime include: {artifacts.generated_runtime_include}\n"
                 f"Symbol include: {artifacts.generated_symbol_include}\n"
+                f"Semantic declarations: {artifacts.generated_semantic_declarations_include}\n"
                 f"Semantic mapping include: {artifacts.generated_semantic_mapping_include}\n"
                 f"Example consumer: {artifacts.generated_example_model}\n"
                 f"Listing file: {run_result.listing_file}\n"
@@ -523,6 +879,35 @@ class MySQLToGAMSApp:
             on_success,
             "Exporting queued import jobs and running GAMS...",
         )
+
+    def _validate_jobs_ready_for_run(self, jobs: list[ImportJob]) -> None:
+        """Perform fast metadata checks before starting a full export run."""
+        if self.repo is None:
+            raise ExportError("Connect to the database before running GAMS.")
+
+        symbol_names: set[str] = set()
+        readiness_warnings: list[str] = []
+        for job in jobs:
+            if job.symbol_name in symbol_names:
+                raise ExportError(
+                    f"The import basket contains duplicate symbol name '{job.symbol_name}'. "
+                    "Each job must have a unique GAMS output symbol."
+                )
+            symbol_names.add(job.symbol_name)
+
+            numeric_columns = set(self.repo.list_numeric_columns(job.table_name))
+            numeric_selected = [column for column in job.selected_columns if column in numeric_columns]
+            if not numeric_selected:
+                readiness_warnings.append(
+                    f"- {job.symbol_name}: no numeric columns are currently selected in table '{job.table_name}'"
+                )
+
+        if readiness_warnings:
+            raise ExportError(
+                "The current basket is not ready for GAMS export because at least one job has no numeric columns.\n\n"
+                + "\n".join(readiness_warnings)
+                + "\n\nAdjust the selected columns before running GAMS."
+            )
 
     def _populate_preview(self, dataframe: pd.DataFrame) -> None:
         self.preview_tree.delete(*self.preview_tree.get_children())

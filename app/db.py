@@ -11,6 +11,21 @@ from sqlalchemy.engine import Engine
 
 
 IDENTIFIER_PATTERN = re.compile(r"^[A-Za-z0-9_$]+$")
+SIMPLE_FILTER_PATTERN = re.compile(r"^[A-Za-z0-9_`'\"().,<>=!%+/*\s-]+$")
+NUMERIC_DATA_TYPES = {
+    "bigint",
+    "bit",
+    "decimal",
+    "double",
+    "float",
+    "int",
+    "integer",
+    "mediumint",
+    "numeric",
+    "real",
+    "smallint",
+    "tinyint",
+}
 
 
 def quote_mysql_identifier(identifier: str) -> str:
@@ -31,6 +46,18 @@ def validate_where_clause(where_clause: str) -> str:
         raise ValueError(
             "The WHERE/filter text contains unsupported SQL control characters. "
             "Use a simple filter expression only, without semicolons or comments."
+        )
+    if not SIMPLE_FILTER_PATTERN.match(normalized):
+        raise ValueError(
+            "The WHERE/filter text contains unsupported characters. "
+            "Use a simple SQL expression such as Anno = 2023 or profit > 0."
+        )
+    blocked_keywords = ("select", "insert", "update", "delete", "drop", "union", "join")
+    lowered = normalized.lower()
+    if any(re.search(rf"\b{keyword}\b", lowered) for keyword in blocked_keywords):
+        raise ValueError(
+            "The WHERE/filter text must be a simple filter expression only. "
+            "Full SQL statements and joins are not supported in this field."
         )
 
     return normalized
@@ -86,9 +113,13 @@ class MySQLRepository:
 
     def list_columns(self, table_name: str) -> list[str]:
         """Return column names for the selected table."""
+        return [name for name, _data_type in self.list_column_metadata(table_name)]
+
+    def list_column_metadata(self, table_name: str) -> list[tuple[str, str]]:
+        """Return column names and normalized MySQL data types for the selected table."""
         query = text(
             """
-            SELECT column_name
+            SELECT column_name, data_type
             FROM information_schema.columns
             WHERE table_schema = :database_name
               AND table_name = :table_name
@@ -99,8 +130,16 @@ class MySQLRepository:
             rows = connection.execute(
                 query,
                 {"database_name": self.config.database, "table_name": table_name},
-            ).scalars()
-            return list(rows)
+            ).all()
+            return [(str(column_name), str(data_type).lower()) for column_name, data_type in rows]
+
+    def list_numeric_columns(self, table_name: str) -> list[str]:
+        """Return column names whose MySQL data type is numeric-like."""
+        return [
+            column_name
+            for column_name, data_type in self.list_column_metadata(table_name)
+            if data_type in NUMERIC_DATA_TYPES
+        ]
 
     def fetch_preview(
         self,

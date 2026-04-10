@@ -145,6 +145,9 @@ def run_gams_model(project_root: Path, model_path: Path) -> GAMSRunResult:
             "GAMS execution failed.\n\n"
             f"Command: {' '.join(exc.cmd)}\n"
             f"Exit code: {exc.returncode}\n"
+            f"Listing file: {listing_file}\n"
+            f"Log file: {log_file}\n"
+            "If the command started successfully, inspect the listing/log files for the precise GAMS error.\n\n"
             f"Stdout:\n{exc.stdout}\n"
             f"Stderr:\n{exc.stderr}"
         ) from exc

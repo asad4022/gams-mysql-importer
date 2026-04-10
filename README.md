@@ -196,16 +196,25 @@ The window title is `MySQL to GAMS Importer`.
    - `lower_bound`
    - `upper_bound`
 6. Click `Assign Role To Selected Columns` to record the current semantic choices.
-7. Click `Preview Current Selection` if you want to inspect the current form.
-8. Click `Add Import Job` to place the current selection in the import basket.
-9. Repeat for additional tables or symbol names.
-10. Review the `Import Basket`.
-11. Click `Export Basket and Run GAMS`.
+7. Review the `Pre-Run Readiness` panel to confirm:
+   - selected table
+   - selected columns
+   - symbol name
+   - row limit
+   - filter
+   - whether the current selection includes at least one numeric column
+8. Click `Preview Current Selection` if you want to inspect the current form.
+9. Click `Add Import Job` to place the current selection in the import basket.
+10. Use `Edit Selected Job`, `Save Changes To Selected Job`, or `Duplicate Selected Job` to refine basket entries without rebuilding them from scratch.
+11. Repeat for additional tables or symbol names.
+12. Review the `Import Basket`.
+13. Click `Export Basket and Run GAMS`.
 
 Professional behavior of the basket:
 
 - each job has its own source table, selected columns, row limit, filter text, and output symbol,
 - each job can also carry optional per-column semantic role assignments,
+- basket items can be loaded back into the form for editing and duplicated with a safe new symbol name,
 - the first queued job becomes the backward-compatible primary symbol `data(obs,col)`,
 - every queued job also produces its own reusable named symbol.
 
@@ -230,6 +239,8 @@ Other important runtime outputs:
 - `gams/generated_semantic_declarations.gms`
 - `gams/generated_semantic_mapping.gms`
 - `gams/generated_unload_symbols.gms`
+- GUI `Pre-Run Readiness` panel
+- GUI `Post-Run Results` panel
 
 Meaning of the key files:
 
@@ -242,6 +253,8 @@ Meaning of the key files:
 - `gams_run.lst`: listing file for inspecting execution details
 - `gams_run.log`: log file for a concise execution trace
 - `import_jobs_manifest.csv`: basket summary for the current run
+- `Pre-Run Readiness`: form-level summary that helps catch missing numeric columns and filter issues before export
+- `Post-Run Results`: artifact inventory with the main output file paths from the latest run
 
 ## How GAMS Is Called
 
@@ -290,6 +303,16 @@ This is the best way to confirm exactly what the SQL import produced before usin
 - Observation numbering starts at `1` independently for each import job.
 - Only numeric columns are exported into GAMS parameters.
 - If a queued job contains no numeric columns in the fetched result, the export fails clearly before GAMS runs.
+
+## Validation And Safety Notes
+
+- Output symbol names must start with a letter or underscore and may contain only letters, digits, and underscores.
+- Reserved names such as `data`, `obs`, `col`, `profit`, and `capacity` cannot be used as output symbols.
+- The GUI validates table and column choices before adding or updating a basket item.
+- The `Filter / WHERE` field is intentionally conservative:
+  - use only a simple filter expression such as `Anno = 2023` or `profit > 0`
+  - semicolons, SQL comments, joins, unions, and full SQL statements are blocked
+- The pre-run validation step checks that each queued import job still has at least one numeric column selected before GAMS is started.
 
 ## How To Use Imported SQL Data In Your Own GAMS Model
 
@@ -513,13 +536,15 @@ Practical runtime verification:
 
 1. Start the GUI.
 2. Queue one or more import jobs.
-3. Run `Export Basket and Run GAMS`.
+3. Confirm the `Pre-Run Readiness` panel looks correct.
+4. Run `Export Basket and Run GAMS`.
 4. Confirm that:
    - `data/imported_data.gdx` exists
    - `data/gams_run.lst` exists
    - `data/gams_run.log` exists
    - generated helper files exist under `gams/`
-5. Open or include `gams/generated_import_symbols.gms` from another GAMS script.
+5. Confirm the `Post-Run Results` panel lists the generated artifact locations.
+6. Open or include `gams/generated_import_symbols.gms` from another GAMS script.
 
 ## Current Assumptions And Limitations
 
