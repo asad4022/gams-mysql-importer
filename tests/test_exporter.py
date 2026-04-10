@@ -86,6 +86,12 @@ def test_export_import_jobs_generates_runtime_and_consumer_files(tmp_path: Path)
     runtime_text = artifacts.generated_runtime_include.read_text(encoding="utf-8")
     symbol_text = artifacts.generated_symbol_include.read_text(encoding="utf-8")
     example_text = artifacts.generated_example_model.read_text(encoding="utf-8")
+    multi_job_example_text = artifacts.generated_multi_job_example_model.read_text(
+        encoding="utf-8"
+    )
+    modeling_helper_text = artifacts.generated_modeling_helper_include.read_text(
+        encoding="utf-8"
+    )
     semantic_declarations_text = artifacts.generated_semantic_declarations_include.read_text(
         encoding="utf-8"
     )
@@ -99,10 +105,14 @@ def test_export_import_jobs_generates_runtime_and_consumer_files(tmp_path: Path)
         encoding="utf-8"
     )
     manifest_text = artifacts.manifest_csv.read_text(encoding="utf-8")
+    symbol_catalog_text = artifacts.symbol_catalog_csv.read_text(encoding="utf-8")
 
     assert "name: certificationData" in runtime_text
     assert "name: laborCostData" in runtime_text
     assert "name: data" in runtime_text
+    assert "$onMultiR" in symbol_text
+    assert "$load obs__certificationData" in symbol_text
+    assert "$load col__laborCostData" in symbol_text
     assert "$load data" in symbol_text
     assert "$load certificationData" in symbol_text
     assert "$load laborCostData" in symbol_text
@@ -111,7 +121,24 @@ def test_export_import_jobs_generates_runtime_and_consumer_files(tmp_path: Path)
     assert "$load structuredIndex1__certificationData" in symbol_text
     assert "$load certificationData__profit" in symbol_text
     assert "$load certificationData__capacity" in symbol_text
+    assert "$offMulti" in symbol_text
     assert "display data, totalPrimaryData, certificationData, laborCostData" in example_text
+    assert '$include "gams/generated_modeling_helpers.gms"' in multi_job_example_text
+    assert "genericCoverage = card(genericImportedSymbol);" in multi_job_example_text
+    assert "total__certificationData" in multi_job_example_text
+    assert "total__laborCostData" in multi_job_example_text
+    assert "importJob(*) \"import jobs from the current basket\" / 'certificationData', 'laborCostData' /" in modeling_helper_text
+    assert "genericImportedSymbol(importJob,*)" in modeling_helper_text
+    assert "semanticDerivedSymbol(importJob,*)" in modeling_helper_text
+    assert "structuredDerivedSymbol(importJob,*)" in modeling_helper_text
+    assert "sharedDimensionLabel(importJob,*)" in modeling_helper_text
+    assert "genericImportedSymbol('certificationData','data') = yes;" in modeling_helper_text
+    assert "semanticDerivedSymbol('certificationData','profit__certificationData') = yes;" in modeling_helper_text
+    assert "structuredDerivedSymbol('certificationData','certificationData__profit') = yes;" in modeling_helper_text
+    assert "sharedDimensionLabel('certificationData','obs') = yes;" in modeling_helper_text
+    assert "sharedDimensionLabel('certificationData','col') = yes;" in modeling_helper_text
+    assert "structuredRank('certificationData') = 1;" in modeling_helper_text
+    assert "semanticRoleCount('laborCostData') = 1;" in modeling_helper_text
     assert "Set requestedSemanticRole__certificationData(semanticRole)" in semantic_declarations_text
     assert "Parameter profit__certificationData(obs__certificationData)" in semantic_declarations_text
     assert "requestedSemanticRole__certificationData('profit') = yes;" in semantic_mapping_text
@@ -127,4 +154,14 @@ def test_export_import_jobs_generates_runtime_and_consumer_files(tmp_path: Path)
     assert "resource_id:index" in manifest_text
     assert "sku" in manifest_text
     assert "profit,capacity" in manifest_text
+    assert "generic_symbol,generic_dimensions" in manifest_text
+    assert "semantic_mapped_symbols" in manifest_text
+    assert "structured_derived_symbols" in manifest_text
+    assert "structured_dimensions" in manifest_text
+    assert "certificationData,semantic,profit__certificationData,obs" in symbol_catalog_text
+    assert (
+        "certificationData,structured,certificationData__profit,structuredIndex1"
+        in symbol_catalog_text
+    )
+    assert "laborCostData,semantic,cost__laborCostData,obs" in symbol_catalog_text
     assert artifacts.primary_symbol_name == "certificationData"

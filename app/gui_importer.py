@@ -1004,8 +1004,13 @@ class MySQLToGAMSApp:
                     ("Legacy long CSV", str(artifacts.legacy_long_csv)),
                     ("Import job CSV folder", str(artifacts.job_directory)),
                     ("Import manifest", str(artifacts.manifest_csv)),
+                    ("Symbol catalog", str(artifacts.symbol_catalog_csv)),
                     ("Generated runtime include", str(artifacts.generated_runtime_include)),
                     ("Generated symbol include", str(artifacts.generated_symbol_include)),
+                    (
+                        "Generated modeling helper include",
+                        str(artifacts.generated_modeling_helper_include),
+                    ),
                     (
                         "Generated semantic declarations",
                         str(artifacts.generated_semantic_declarations_include),
@@ -1023,6 +1028,10 @@ class MySQLToGAMSApp:
                         str(artifacts.generated_structured_assignments_include),
                     ),
                     ("Generated example consumer", str(artifacts.generated_example_model)),
+                    (
+                        "Generated multi-job example",
+                        str(artifacts.generated_multi_job_example_model),
+                    ),
                     ("Listing file", str(run_result.listing_file)),
                     ("Log file", str(run_result.log_file)),
                     ("GDX handoff", str(run_result.gdx_file)),
@@ -1057,17 +1066,20 @@ class MySQLToGAMSApp:
                 f"{symbol_lines}\n\n"
                 "Structured derived symbols requested in this run:\n"
                 f"{structured_lines}\n\n"
-                "Assigned semantic roles are available in the generated semantic mapping include.\n\n"
+                "Generic, semantic, and structured outputs are summarized in the manifest and symbol catalog.\n\n"
                 f"GDX data: {run_result.gdx_file}\n"
                 f"Import job folder: {artifacts.job_directory}\n"
                 f"Manifest: {artifacts.manifest_csv}\n"
+                f"Symbol catalog: {artifacts.symbol_catalog_csv}\n"
                 f"Runtime include: {artifacts.generated_runtime_include}\n"
                 f"Symbol include: {artifacts.generated_symbol_include}\n"
+                f"Modeling helper include: {artifacts.generated_modeling_helper_include}\n"
                 f"Semantic declarations: {artifacts.generated_semantic_declarations_include}\n"
                 f"Semantic mapping include: {artifacts.generated_semantic_mapping_include}\n"
                 f"Structured declarations: {artifacts.generated_structured_declarations_include}\n"
                 f"Structured assignments: {artifacts.generated_structured_assignments_include}\n"
                 f"Example consumer: {artifacts.generated_example_model}\n"
+                f"Multi-job example: {artifacts.generated_multi_job_example_model}\n"
                 f"Listing file: {run_result.listing_file}\n"
                 f"Log file: {run_result.log_file}",
             )

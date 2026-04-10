@@ -50,11 +50,14 @@ class ExportArtifacts:
     manifest_csv: Path
     generated_runtime_include: Path
     generated_symbol_include: Path
+    generated_modeling_helper_include: Path
     generated_example_model: Path
+    generated_multi_job_example_model: Path
     generated_unload_include: Path
     generated_semantic_declarations_include: Path
     generated_semantic_mapping_include: Path
     generated_structured_declarations_include: Path
     generated_structured_assignments_include: Path
+    symbol_catalog_csv: Path
     symbol_names: list[str]
     primary_symbol_name: str

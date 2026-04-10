@@ -52,6 +52,7 @@ The application is split into small modules:
 - `gams/optimization_example.gms`: optional resource-allocation LP example using the mapped primary symbol.
 - `gams/example_use_imported_symbols.gms`: separate GAMS consumer script showing how imported symbols can be reused.
 - `gams/example_use_structured_symbols.gms`: separate GAMS consumer script showing how direct structured symbols can be reused.
+- `gams/example_multi_job_integration.gms`: generated downstream example showing how multiple imported jobs can be combined in one model.
 
 High-level flow:
 
@@ -110,9 +111,11 @@ Generated at runtime:
 - `data/gams_run.log`
 - `gams/generated_import_runtime.gms`
 - `gams/generated_import_symbols.gms`
+- `gams/generated_modeling_helpers.gms`
 - `gams/generated_unload_symbols.gms`
 - `gams/generated_structured_declarations.gms`
 - `gams/generated_structured_assignments.gms`
+- `gams/example_multi_job_integration.gms`
 - `gams/example_use_imported_symbols.gms` may be refreshed to reflect the current basket
 
 ## Prerequisites
@@ -248,10 +251,12 @@ Other important runtime outputs:
 - `data/exported_data_long.csv`
 - `data/import_jobs/<symbol>.csv`
 - `data/import_jobs_manifest.csv`
+- `data/imported_symbol_catalog.csv`
 - `data/gams_run.lst`
 - `data/gams_run.log`
 - `gams/generated_import_runtime.gms`
 - `gams/generated_import_symbols.gms`
+- `gams/generated_modeling_helpers.gms`
 - `gams/generated_semantic_declarations.gms`
 - `gams/generated_semantic_mapping.gms`
 - `gams/generated_structured_declarations.gms`
@@ -265,6 +270,7 @@ Meaning of the key files:
 - `imported_data.gdx`: reusable GAMS database containing all imported symbols
 - `generated_import_runtime.gms`: generated import declarations and Connect block for the current run
 - `generated_import_symbols.gms`: helper include for later `$gdxin` / `$load`
+- `generated_modeling_helpers.gms`: generated job catalog and symbol mapping helper for downstream multi-job models
 - `generated_semantic_declarations.gms`: generated declarations for per-job semantic role symbols
 - `generated_semantic_mapping.gms`: generated semantic role assignments and mapped per-job parameters
 - `generated_structured_declarations.gms`: generated declarations for direct structured sets and parameters
@@ -272,7 +278,8 @@ Meaning of the key files:
 - `generated_unload_symbols.gms`: generated unload list used by the main model
 - `gams_run.lst`: listing file for inspecting execution details
 - `gams_run.log`: log file for a concise execution trace
-- `import_jobs_manifest.csv`: basket summary for the current run
+- `import_jobs_manifest.csv`: job-level summary showing generic, semantic, and structured outputs for each queued import
+- `imported_symbol_catalog.csv`: row-per-symbol catalog for downstream modeling and debugging
 - `Pre-Run Readiness`: form-level summary that helps catch missing numeric columns and filter issues before export
 - `Post-Run Results`: artifact inventory with the main output file paths from the latest run
 
@@ -330,7 +337,6 @@ This is the best way to confirm exactly what the SQL import produced before usin
 - Output symbol names must start with a letter or underscore and may contain only letters, digits, and underscores.
 - Reserved names such as `data`, `obs`, `col`, `profit`, and `capacity` cannot be used as output symbols.
 - The GUI validates table and column choices before adding or updating a basket item.
-- The `Filter / WHERE` field is intentionally conservative:
 - The `Filter expression` field is intentionally conservative:
   - use only a simple filter expression such as `Anno = 2023` or `profit > 0`
   - semicolons, SQL comments, joins, unions, and full SQL statements are blocked
@@ -430,6 +436,26 @@ This is the intended bridge:
 ## How To Use Imported SQL Data In Your Own GAMS Model
 
 This is the core reusable bridge.
+
+### When to use generic vs semantic vs structured
+
+Use the three symbol layers for different modeling situations:
+
+- `generic`
+  Use when you want maximum flexibility or when the data structure is still exploratory.
+  Example: `productsData(obs,col)`
+- `semantic`
+  Use when a basket item has clear economic or modeling meaning such as `profit`, `capacity`, or `cost`, but you still want an observation-based view.
+  Example: `profit__productsData(obs__productsData)`
+- `structured`
+  Use when you explicitly know the index columns and want direct model-ready parameters such as `param(i)` or `param(i,j)`.
+  Example: `productsData__profit(structuredIndex1__productsData)`
+
+The recommended workflow is:
+
+1. Start with generic imports for safety and traceability.
+2. Add semantic roles when the columns have stable meaning.
+3. Add structured index/value assignments when you want direct downstream model coefficients.
 
 ### How imported symbols are named
 
@@ -572,6 +598,83 @@ $gdxin
 
 display productsData__profit, productsData__capacity;
 ```
+
+## Combining Multiple Imported Jobs In One GAMS Model
+
+Phase 4 focuses on making multi-job downstream models easier to understand and assemble.
+
+For each run, the exporter now produces:
+
+- `gams/generated_modeling_helpers.gms`
+- `data/import_jobs_manifest.csv`
+- `data/imported_symbol_catalog.csv`
+- `gams/example_multi_job_integration.gms`
+
+These help answer four common questions:
+
+1. Which jobs were imported in this run?
+2. Which generic symbols belong to each job?
+3. Which semantic symbols were derived for each job?
+4. Which structured symbols and dimensions were derived for each job?
+
+### Generated multi-job helper include
+
+`gams/generated_modeling_helpers.gms` declares small helper sets and parameters such as:
+
+- `importJob`
+- `genericImportedSymbol(importJob,*)`
+- `semanticDerivedSymbol(importJob,*)`
+- `structuredIndexSet(importJob,*)`
+- `structuredDerivedSymbol(importJob,*)`
+- `sharedDimensionLabel(importJob,*)`
+- `structuredRank(importJob)`
+- `semanticRoleCount(importJob)`
+- `structuredValueCount(importJob)`
+
+These are designed for downstream inspection and documentation, not as a replacement for the imported symbols themselves.
+
+### Example: combining two jobs
+
+Suppose the current run produced:
+
+- `productsData`
+- `arcData`
+
+Then a downstream model can load both the symbols and the helper catalog:
+
+```gams
+$include "gams/generated_import_symbols.gms"
+$include "gams/generated_modeling_helpers.gms"
+
+Scalar totalProducts;
+Scalar totalArcs;
+Scalar totalProfit;
+Scalar totalArcCost;
+
+totalProducts = sum((obs__productsData, col__productsData), productsData(obs__productsData, col__productsData));
+totalArcs = sum((obs__arcData, col__arcData), arcData(obs__arcData, col__arcData));
+totalProfit = sum(structuredIndex1__productsData, productsData__profit(structuredIndex1__productsData));
+totalArcCost = sum((structuredIndex1__arcData, structuredIndex2__arcData), arcData__cost(structuredIndex1__arcData, structuredIndex2__arcData));
+
+display
+    importJob,
+    genericImportedSymbol,
+    semanticDerivedSymbol,
+    structuredDerivedSymbol,
+    sharedDimensionLabel,
+    totalProducts,
+    totalArcs,
+    totalProfit,
+    totalArcCost;
+```
+
+This example intentionally combines:
+
+- generic imported symbols from two jobs
+- one structured parameter from the first job
+- one structured parameter from the second job
+
+The generated file `gams/example_multi_job_integration.gms` provides the same pattern for the current basket.
 
 ## Semantic Role Assignment
 

@@ -16,9 +16,12 @@ PREVIEW_FILENAME = "exported_preview.csv"
 LONG_FILENAME = "exported_data_long.csv"
 IMPORT_JOB_DIRNAME = "import_jobs"
 MANIFEST_FILENAME = "import_jobs_manifest.csv"
+SYMBOL_CATALOG_FILENAME = "imported_symbol_catalog.csv"
 GENERATED_RUNTIME_INCLUDE = "generated_import_runtime.gms"
 GENERATED_SYMBOL_INCLUDE = "generated_import_symbols.gms"
+GENERATED_MODELING_HELPER_INCLUDE = "generated_modeling_helpers.gms"
 GENERATED_EXAMPLE_MODEL = "example_use_imported_symbols.gms"
+GENERATED_MULTI_JOB_EXAMPLE_MODEL = "example_multi_job_integration.gms"
 GENERATED_UNLOAD_INCLUDE = "generated_unload_symbols.gms"
 GENERATED_SEMANTIC_DECLARATIONS_INCLUDE = "generated_semantic_declarations.gms"
 GENERATED_SEMANTIC_MAPPING_INCLUDE = "generated_semantic_mapping.gms"
@@ -197,11 +200,14 @@ def export_import_jobs(
     preview_csv = save_preview_csv(jobs[0].dataframe, output_dir)
     legacy_long_csv = save_long_csv(jobs[0].dataframe, output_dir)
     manifest_csv = _write_manifest(jobs, output_dir / MANIFEST_FILENAME)
+    symbol_catalog_csv = _write_symbol_catalog(jobs, output_dir / SYMBOL_CATALOG_FILENAME)
     _write_job_csvs(jobs, validated_symbols, job_directory)
 
     generated_runtime_include = gams_dir / GENERATED_RUNTIME_INCLUDE
     generated_symbol_include = gams_dir / GENERATED_SYMBOL_INCLUDE
+    generated_modeling_helper_include = gams_dir / GENERATED_MODELING_HELPER_INCLUDE
     generated_example_model = gams_dir / GENERATED_EXAMPLE_MODEL
+    generated_multi_job_example_model = gams_dir / GENERATED_MULTI_JOB_EXAMPLE_MODEL
     generated_unload_include = gams_dir / GENERATED_UNLOAD_INCLUDE
     generated_semantic_declarations_include = gams_dir / GENERATED_SEMANTIC_DECLARATIONS_INCLUDE
     generated_semantic_mapping_include = gams_dir / GENERATED_SEMANTIC_MAPPING_INCLUDE
@@ -223,16 +229,25 @@ def export_import_jobs(
     )
     _write_unload_include(jobs, validated_symbols, generated_unload_include)
     _write_symbol_include(jobs, validated_symbols, generated_symbol_include)
+    _write_modeling_helper_include(jobs, validated_symbols, generated_modeling_helper_include)
     _write_example_consumer(jobs, validated_symbols, generated_example_model)
+    _write_multi_job_example_consumer(
+        jobs,
+        validated_symbols,
+        generated_multi_job_example_model,
+    )
 
     return ExportArtifacts(
         preview_csv=preview_csv,
         legacy_long_csv=legacy_long_csv,
         job_directory=job_directory,
         manifest_csv=manifest_csv,
+        symbol_catalog_csv=symbol_catalog_csv,
         generated_runtime_include=generated_runtime_include,
         generated_symbol_include=generated_symbol_include,
+        generated_modeling_helper_include=generated_modeling_helper_include,
         generated_example_model=generated_example_model,
+        generated_multi_job_example_model=generated_multi_job_example_model,
         generated_unload_include=generated_unload_include,
         generated_semantic_declarations_include=generated_semantic_declarations_include,
         generated_semantic_mapping_include=generated_semantic_mapping_include,
@@ -254,12 +269,18 @@ def _write_manifest(jobs: list[MaterializedImportJob], output_path: Path) -> Pat
                 "selected_columns",
                 "max_rows",
                 "where_clause",
+                "primary_alias",
+                "generic_symbol",
+                "generic_dimensions",
                 "semantic_roles",
+                "semantic_mapped_symbols",
                 "structured_index_columns",
                 "structured_value_columns",
+                "structured_derived_symbols",
+                "structured_dimensions",
             ]
         )
-        for materialized_job in jobs:
+        for index, materialized_job in enumerate(jobs):
             semantic_roles = validate_semantic_roles(
                 materialized_job.job.selected_columns,
                 materialized_job.job.semantic_roles,
@@ -277,11 +298,116 @@ def _write_manifest(jobs: list[MaterializedImportJob], output_path: Path) -> Pat
                     ",".join(materialized_job.job.selected_columns),
                     materialized_job.job.max_rows,
                     materialized_job.job.where_clause,
+                    "data(obs,col)" if index == 0 else "",
+                    f"{materialized_job.job.symbol_name}(obs,col)",
+                    "obs,col",
                     ";".join(f"{column}:{role}" for column, role in sorted(semantic_roles.items())),
+                    ",".join(
+                        f"{role}__{materialized_job.job.symbol_name}(obs)"
+                        for role in sorted(set(semantic_roles.values()))
+                        if role != "index"
+                    ),
                     ",".join(structured_indexes),
                     ",".join(structured_values),
+                    ",".join(
+                        f"{_structured_parameter_name(materialized_job.job.symbol_name, value_column)}"
+                        for value_column in structured_values
+                    ),
+                    " | ".join(
+                        f"{_structured_parameter_name(materialized_job.job.symbol_name, value_column)}"
+                        f"({','.join(f'i{position}' for position in range(1, len(structured_indexes) + 1))})"
+                        for value_column in structured_values
+                    ),
                 ]
             )
+    return output_path
+
+
+def _write_symbol_catalog(jobs: list[MaterializedImportJob], output_path: Path) -> Path:
+    """Write a row-per-symbol catalog for downstream multi-job modeling."""
+    with output_path.open("w", newline="", encoding="utf-8") as handle:
+        writer = csv.writer(handle)
+        writer.writerow(
+            [
+                "job_symbol",
+                "category",
+                "symbol_name",
+                "dimensions",
+                "source_table",
+                "source_columns",
+                "details",
+            ]
+        )
+
+        for index, materialized_job in enumerate(jobs):
+            job = materialized_job.job
+            semantic_roles = validate_semantic_roles(job.selected_columns, job.semantic_roles)
+            structured_indexes, structured_values = validate_structured_columns(
+                materialized_job.dataframe,
+                job.selected_columns,
+                job.structured_index_columns,
+                job.structured_value_columns,
+            )
+            selected_columns = ",".join(job.selected_columns)
+
+            writer.writerow(
+                [
+                    job.symbol_name,
+                    "generic-primary" if index == 0 else "generic",
+                    "data" if index == 0 else job.symbol_name,
+                    "obs,col",
+                    job.table_name,
+                    selected_columns,
+                    "Backward-compatible primary alias for the first job."
+                    if index == 0
+                    else "Reusable generic imported symbol.",
+                ]
+            )
+            if index == 0:
+                writer.writerow(
+                    [
+                        job.symbol_name,
+                        "generic",
+                        job.symbol_name,
+                        "obs,col",
+                        job.table_name,
+                        selected_columns,
+                        "Named generic imported symbol for the first job.",
+                    ]
+                )
+
+            for role in sorted(set(semantic_roles.values())):
+                if role == "index":
+                    continue
+                writer.writerow(
+                    [
+                        job.symbol_name,
+                        "semantic",
+                        f"{role}__{job.symbol_name}",
+                        "obs",
+                        job.table_name,
+                        selected_columns,
+                        f"Derived from semantic role '{role}'.",
+                    ]
+                )
+
+            structured_dimensions = ",".join(
+                f"structuredIndex{position}"
+                for position in range(1, len(structured_indexes) + 1)
+            )
+            for value_column in structured_values:
+                writer.writerow(
+                    [
+                        job.symbol_name,
+                        "structured",
+                        _structured_parameter_name(job.symbol_name, value_column),
+                        structured_dimensions,
+                        job.table_name,
+                        selected_columns,
+                        "Structured derived symbol from explicit index/value columns.",
+                    ]
+                )
+
     return output_path
 
 
@@ -402,6 +528,7 @@ def _write_symbol_include(
     lines: list[str] = [
         "* Auto-generated helper include for loading imported SQL symbols into your own GAMS model.",
         "* Include this file after the import pipeline has created data/imported_data.gdx.",
+        '* For multi-job downstream models, include "gams/generated_modeling_helpers.gms" as well.',
         "",
         "Sets",
         '    obs(*) "primary observation set from the first import job"',
@@ -455,15 +582,21 @@ def _write_symbol_include(
             )
     lines[-1] = lines[-1] + ";"
 
-    lines.extend(["", "$gdxin data/imported_data.gdx", "$load data"])
+    lines.extend(
+        [
+            "",
+            "* Load shared and per-job domain sets first so downstream parameters have stable domains.",
+            "$gdxin data/imported_data.gdx",
+            "$onMultiR",
+            "$load obs",
+            "$load col",
+        ]
+    )
     for symbol_name in validated_symbols:
-        lines.append(f"$load {symbol_name}")
-        for role in SEMANTIC_ROLES:
-            if role == "index":
-                continue
-            lines.append(f"$load {role}__{symbol_name}")
+        lines.append(f"$load {_obs_set_name(symbol_name)}")
+        lines.append(f"$load {_col_set_name(symbol_name)}")
     for materialized_job, symbol_name in zip(jobs, validated_symbols, strict=True):
-        index_columns, value_columns = validate_structured_columns(
+        index_columns, _value_columns = validate_structured_columns(
             materialized_job.dataframe,
             materialized_job.job.selected_columns,
             materialized_job.job.structured_index_columns,
@@ -471,9 +604,31 @@ def _write_symbol_include(
         )
         for position in range(1, len(index_columns) + 1):
             lines.append(f"$load {_structured_index_set_name(symbol_name, position)}")
+
+    lines.extend(["", "* Generic symbols", "$load data"])
+    for symbol_name in validated_symbols:
+        lines.append(f"$load {symbol_name}")
+    lines.append("")
+    lines.append("* Semantic mapped symbols")
+    lines.append("")
+    for symbol_name in validated_symbols:
+        for role in SEMANTIC_ROLES:
+            if role == "index":
+                continue
+            lines.append(f"$load {role}__{symbol_name}")
+    lines.append("")
+    lines.append("* Structured derived parameters")
+    lines.append("")
+    for materialized_job, symbol_name in zip(jobs, validated_symbols, strict=True):
+        _index_columns, value_columns = validate_structured_columns(
+            materialized_job.dataframe,
+            materialized_job.job.selected_columns,
+            materialized_job.job.structured_index_columns,
+            materialized_job.job.structured_value_columns,
+        )
         for value_column in value_columns:
             lines.append(f"$load {_structured_parameter_name(symbol_name, value_column)}")
-    lines.extend(["$gdxin", ""])
+    lines.extend(["$offMulti", "$gdxin", ""])
 
     output_path.write_text("\n".join(lines), encoding="utf-8")
 
@@ -533,6 +688,197 @@ def _write_example_consumer(
     lines.append("display " + ", ".join(display_items) + ";")
     lines.append("")
 
+    output_path.write_text("\n".join(lines), encoding="utf-8")
+
+
+def _write_modeling_helper_include(
+    jobs: list[MaterializedImportJob],
+    validated_symbols: list[str],
+    output_path: Path,
+) -> None:
+    """Generate a helper include that documents and maps the current basket for multi-job models."""
+    import_job_members = ", ".join(f"'{symbol_name}'" for symbol_name in validated_symbols) or "'none'"
+    lines: list[str] = [
+        "* Auto-generated helper include for combining multiple imported jobs in one GAMS model.",
+        "* It declares a compact catalog of generic, semantic, and structured outputs for the current run.",
+        "",
+        "Sets",
+        f'    importJob(*) "import jobs from the current basket" / {import_job_members} /',
+        '    genericImportedSymbol(importJob,*) "generic imported symbols by job"',
+        '    semanticDerivedSymbol(importJob,*) "semantic derived symbols by job"',
+        '    structuredIndexSet(importJob,*) "structured index set identifiers by job"',
+        '    structuredDerivedSymbol(importJob,*) "structured derived symbols by job"',
+        '    sharedDimensionLabel(importJob,*) "dimension labels that help combine jobs downstream"',
+        ";",
+        "",
+        "Parameter",
+        '    structuredRank(importJob) "number of explicit structured index dimensions for each job"',
+        '    semanticRoleCount(importJob) "number of non-index semantic role mappings for each job"',
+        '    structuredValueCount(importJob) "number of structured derived value symbols for each job"',
+        ";",
+        "",
+    ]
+
+    for index, (materialized_job, symbol_name) in enumerate(zip(jobs, validated_symbols, strict=True)):
+        job = materialized_job.job
+        semantic_roles = validate_semantic_roles(job.selected_columns, job.semantic_roles)
+        structured_indexes, structured_values = validate_structured_columns(
+            materialized_job.dataframe,
+            job.selected_columns,
+            job.structured_index_columns,
+            job.structured_value_columns,
+        )
+        lines.append(f"genericImportedSymbol('{symbol_name}','{symbol_name}') = yes;")
+        if index == 0:
+            lines.append(f"genericImportedSymbol('{symbol_name}','data') = yes;")
+            lines.append(f"sharedDimensionLabel('{symbol_name}','data') = yes;")
+        lines.append(f"sharedDimensionLabel('{symbol_name}','obs') = yes;")
+        lines.append(f"sharedDimensionLabel('{symbol_name}','col') = yes;")
+
+        semantic_count = 0
+        for role in sorted(set(semantic_roles.values())):
+            if role == "index":
+                continue
+            semantic_count += 1
+            lines.append(
+                f"semanticDerivedSymbol('{symbol_name}','{role}__{symbol_name}') = yes;"
+            )
+            lines.append(
+                f"sharedDimensionLabel('{symbol_name}','obs') = yes;"
+            )
+
+        for position in range(1, len(structured_indexes) + 1):
+            set_name = _structured_index_set_name(symbol_name, position)
+            lines.append(f"structuredIndexSet('{symbol_name}','{set_name}') = yes;")
+            lines.append(
+                f"sharedDimensionLabel('{symbol_name}','{set_name}') = yes;"
+            )
+
+        for value_column in structured_values:
+            structured_name = _structured_parameter_name(symbol_name, value_column)
+            domain_signature = ",".join(
+                _structured_index_set_name(symbol_name, position)
+                for position in range(1, len(structured_indexes) + 1)
+            )
+            lines.append(
+                f"structuredDerivedSymbol('{symbol_name}','{structured_name}') = yes;"
+            )
+            for position in range(1, len(structured_indexes) + 1):
+                lines.append(
+                    f"sharedDimensionLabel('{symbol_name}','{_structured_index_set_name(symbol_name, position)}') = yes;"
+                )
+
+        lines.append(f"structuredRank('{symbol_name}') = {len(structured_indexes)};")
+        lines.append(f"semanticRoleCount('{symbol_name}') = {semantic_count};")
+        lines.append(f"structuredValueCount('{symbol_name}') = {len(structured_values)};")
+        lines.append("")
+
+    output_path.write_text("\n".join(lines), encoding="utf-8")
+
+
+def _write_multi_job_example_consumer(
+    jobs: list[MaterializedImportJob],
+    validated_symbols: list[str],
+    output_path: Path,
+) -> None:
+    """Generate an example downstream model that uses two imported jobs together."""
+    lines: list[str] = [
+        "$title Example Multi-Job Integration",
+        "",
+        "* Auto-generated example showing how to combine multiple imported jobs in one downstream model.",
+        '$include "gams/generated_import_symbols.gms"',
+        '$include "gams/generated_modeling_helpers.gms"',
+        "",
+        'Scalar genericCoverage "number of generic symbol mappings in the current helper catalog";',
+        "genericCoverage = card(genericImportedSymbol);",
+        "",
+    ]
+
+    if len(validated_symbols) >= 2:
+        first_job = jobs[0]
+        second_job = jobs[1]
+        first_symbol = validated_symbols[0]
+        second_symbol = validated_symbols[1]
+
+        lines.extend(
+            [
+                f'Scalar total__{first_symbol} "generic total for {first_symbol}";',
+                f"total__{first_symbol} = sum(({_obs_set_name(first_symbol)}, {_col_set_name(first_symbol)}), "
+                f"{first_symbol}({_obs_set_name(first_symbol)}, {_col_set_name(first_symbol)}));",
+                f'Scalar total__{second_symbol} "generic total for {second_symbol}";',
+                f"total__{second_symbol} = sum(({_obs_set_name(second_symbol)}, {_col_set_name(second_symbol)}), "
+                f"{second_symbol}({_obs_set_name(second_symbol)}, {_col_set_name(second_symbol)}));",
+                "",
+            ]
+        )
+
+        first_indexes, first_values = validate_structured_columns(
+            first_job.dataframe,
+            first_job.job.selected_columns,
+            first_job.job.structured_index_columns,
+            first_job.job.structured_value_columns,
+        )
+        second_indexes, second_values = validate_structured_columns(
+            second_job.dataframe,
+            second_job.job.selected_columns,
+            second_job.job.structured_index_columns,
+            second_job.job.structured_value_columns,
+        )
+        if first_values:
+            first_structured = _structured_parameter_name(first_symbol, first_values[0])
+            first_domain = ", ".join(
+                _structured_index_set_name(first_symbol, position)
+                for position in range(1, len(first_indexes) + 1)
+            )
+            lines.extend(
+                [
+                    f'Scalar totalStructured__{first_symbol} "structured total for {first_symbol}";',
+                    f"totalStructured__{first_symbol} = sum(({first_domain}), {first_structured}({first_domain}));",
+                    "",
+                ]
+            )
+        if second_values:
+            second_structured = _structured_parameter_name(second_symbol, second_values[0])
+            second_domain = ", ".join(
+                _structured_index_set_name(second_symbol, position)
+                for position in range(1, len(second_indexes) + 1)
+            )
+            lines.extend(
+                [
+                    f'Scalar totalStructured__{second_symbol} "structured total for {second_symbol}";',
+                    f"totalStructured__{second_symbol} = sum(({second_domain}), {second_structured}({second_domain}));",
+                    "",
+                ]
+            )
+
+        display_items = [
+            "importJob",
+            "genericImportedSymbol",
+            "semanticDerivedSymbol",
+            "structuredIndexSet",
+            "structuredDerivedSymbol",
+            "sharedDimensionLabel",
+            "structuredRank",
+            "semanticRoleCount",
+            "structuredValueCount",
+            "genericCoverage",
+            f"total__{first_symbol}",
+            f"total__{second_symbol}",
+        ]
+        if first_values:
+            display_items.append(f"totalStructured__{first_symbol}")
+        if second_values:
+            display_items.append(f"totalStructured__{second_symbol}")
+        lines.append("display " + ", ".join(display_items) + ";")
+    else:
+        lines.extend(
+            [
+                "* At least two queued jobs are recommended for this example.",
+                "display importJob, genericImportedSymbol, semanticDerivedSymbol, structuredDerivedSymbol;",
+            ]
+        )
+
+    lines.append("")
     output_path.write_text("\n".join(lines), encoding="utf-8")
 
 
