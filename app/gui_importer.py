@@ -14,7 +14,14 @@ import pandas as pd
 from sqlalchemy.exc import OperationalError
 
 from .db import DatabaseConfig, MySQLRepository, validate_where_clause
-from .exporter import ExportArtifacts, ExportError, export_import_jobs, save_preview_csv, validate_gams_symbol_name
+from .exporter import (
+    ExportArtifacts,
+    ExportError,
+    export_import_jobs,
+    save_preview_csv,
+    validate_gams_symbol_name,
+    validate_structured_columns,
+)
 from .models import ImportJob, MaterializedImportJob, SEMANTIC_ROLES
 from .runner import GAMSRunError, GAMSRunResult, run_gams_model
 from .utils import DATA_DIR, GAMS_DIR, PROJECT_ROOT, configure_logging, load_db_config
@@ -34,6 +41,8 @@ class MySQLToGAMSApp:
         self.repo: MySQLRepository | None = None
         self.import_jobs: list[ImportJob] = []
         self.current_role_assignments: dict[str, str] = {}
+        self.current_structured_indexes: list[str] = []
+        self.current_structured_values: list[str] = []
         self.current_numeric_columns: set[str] = set()
         self.editing_job_index: int | None = None
 
@@ -138,8 +147,45 @@ class MySQLToGAMSApp:
         self.roles_tree.grid(row=1, column=0, columnspan=4, pady=(10, 0), sticky="nsew")
         role_frame.columnconfigure(3, weight=1)
 
+        structured_frame = ttk.LabelFrame(controls, text="Structured Symbol Generation", padding=10)
+        structured_frame.grid(row=4, column=0, columnspan=5, padx=(0, 10), pady=(8, 0), sticky="nsew")
+
+        ttk.Label(
+            structured_frame,
+            text="Select one or two index columns and one or more numeric value columns to generate direct parameters.",
+        ).grid(row=0, column=0, columnspan=4, sticky="w")
+
+        ttk.Button(
+            structured_frame,
+            text="Mark Selected Columns As Indexes",
+            command=self.assign_selected_columns_as_indexes,
+        ).grid(row=1, column=0, padx=(0, 8), pady=(10, 0), sticky="w")
+        ttk.Button(
+            structured_frame,
+            text="Mark Selected Columns As Values",
+            command=self.assign_selected_columns_as_values,
+        ).grid(row=1, column=1, padx=(0, 8), pady=(10, 0), sticky="w")
+        ttk.Button(
+            structured_frame,
+            text="Clear Structured Assignment",
+            command=self.clear_structured_assignment_from_selected_columns,
+        ).grid(row=1, column=2, pady=(10, 0), sticky="w")
+
+        self.structured_tree = ttk.Treeview(
+            structured_frame,
+            columns=("column", "structure_role"),
+            show="headings",
+            height=5,
+        )
+        self.structured_tree.heading("column", text="Selected Column")
+        self.structured_tree.heading("structure_role", text="Structured Role")
+        self.structured_tree.column("column", width=260, anchor="w")
+        self.structured_tree.column("structure_role", width=180, anchor="w")
+        self.structured_tree.grid(row=2, column=0, columnspan=4, pady=(10, 0), sticky="nsew")
+        structured_frame.columnconfigure(3, weight=1)
+
         actions_frame = ttk.Frame(controls)
-        actions_frame.grid(row=2, column=5, columnspan=2, rowspan=2, padx=(12, 0), pady=(10, 6), sticky="ne")
+        actions_frame.grid(row=2, column=5, columnspan=2, rowspan=3, padx=(12, 0), pady=(10, 6), sticky="ne")
         ttk.Button(actions_frame, text="Preview Current Selection", command=self.preview_data).pack(
             fill="x", pady=(0, 8)
         )
@@ -171,7 +217,7 @@ class MySQLToGAMSApp:
 
         self.basket_tree = ttk.Treeview(
             basket_frame,
-            columns=("symbol", "table", "rows", "filter", "columns", "roles"),
+            columns=("symbol", "table", "rows", "filter", "columns", "roles", "structure"),
             show="headings",
             height=7,
         )
@@ -181,12 +227,14 @@ class MySQLToGAMSApp:
         self.basket_tree.heading("filter", text="Filter expression")
         self.basket_tree.heading("columns", text="Selected Columns")
         self.basket_tree.heading("roles", text="Semantic Roles")
+        self.basket_tree.heading("structure", text="Structured Output")
         self.basket_tree.column("symbol", width=180, anchor="w")
         self.basket_tree.column("table", width=170, anchor="w")
         self.basket_tree.column("rows", width=80, anchor="center")
-        self.basket_tree.column("filter", width=220, anchor="w")
-        self.basket_tree.column("columns", width=320, anchor="w")
-        self.basket_tree.column("roles", width=260, anchor="w")
+        self.basket_tree.column("filter", width=200, anchor="w")
+        self.basket_tree.column("columns", width=250, anchor="w")
+        self.basket_tree.column("roles", width=220, anchor="w")
+        self.basket_tree.column("structure", width=260, anchor="w")
         self.basket_tree.pack(side="left", fill="x", expand=True)
 
         basket_scrollbar = ttk.Scrollbar(
@@ -300,6 +348,14 @@ class MySQLToGAMSApp:
             ("Filter", filter_text or "(none)"),
             ("Filter status", filter_status),
             (
+                "Structured indexes",
+                ", ".join(self.current_structured_indexes) or "(generic fallback only)",
+            ),
+            (
+                "Structured values",
+                ", ".join(self.current_structured_values) or "(generic fallback only)",
+            ),
+            (
                 "Numeric columns present",
                 self._format_numeric_presence(selected_columns),
             ),
@@ -366,8 +422,10 @@ class MySQLToGAMSApp:
         if not self.symbol_name_var.get().strip():
             self.symbol_name_var.set(self._suggest_symbol_name(table_name))
         self.current_role_assignments.clear()
+        self.current_structured_indexes.clear()
+        self.current_structured_values.clear()
         self.current_numeric_columns.clear()
-        self._refresh_readiness_panel()
+        self._refresh_role_assignments()
 
         def task() -> tuple[list[str], list[str]]:
             assert self.repo is not None
@@ -470,6 +528,16 @@ class MySQLToGAMSApp:
                 for column_name, role in self.current_role_assignments.items()
                 if column_name in selected_columns
             },
+            structured_index_columns=[
+                column_name
+                for column_name in self.current_structured_indexes
+                if column_name in selected_columns
+            ],
+            structured_value_columns=[
+                column_name
+                for column_name in self.current_structured_values
+                if column_name in selected_columns
+            ],
         )
 
     def assign_role_to_selected_columns(self) -> None:
@@ -507,9 +575,96 @@ class MySQLToGAMSApp:
         self._refresh_readiness_panel()
         self.status_var.set("Cleared semantic roles from selected column(s).")
 
+    def assign_selected_columns_as_indexes(self) -> None:
+        """Mark the selected columns as structured index columns."""
+        selected_columns = self._selected_columns()
+        if not selected_columns:
+            messagebox.showerror(
+                "Structured Symbol Generation",
+                "Select one or more columns before assigning structured index columns.",
+            )
+            return
+
+        remaining_indexes = [column for column in self.current_structured_indexes if column not in selected_columns]
+        combined_indexes = remaining_indexes + [column for column in selected_columns if column not in remaining_indexes]
+        if len(combined_indexes) > 2:
+            messagebox.showerror(
+                "Structured Symbol Generation",
+                "Direct structured parameters currently support at most two index columns.",
+            )
+            return
+
+        self.current_structured_indexes = combined_indexes
+        self.current_structured_values = [
+            column for column in self.current_structured_values if column not in selected_columns
+        ]
+        self._refresh_role_assignments()
+        self.status_var.set(
+            f"Marked {len(selected_columns)} selected column(s) as structured index columns."
+        )
+
+    def assign_selected_columns_as_values(self) -> None:
+        """Mark the selected columns as structured value columns."""
+        selected_columns = self._selected_columns()
+        if not selected_columns:
+            messagebox.showerror(
+                "Structured Symbol Generation",
+                "Select one or more columns before assigning structured value columns.",
+            )
+            return
+
+        non_numeric = [
+            column_name for column_name in selected_columns if column_name not in self.current_numeric_columns
+        ]
+        if non_numeric:
+            messagebox.showerror(
+                "Structured Symbol Generation",
+                "Structured value columns must be numeric. "
+                f"Non-numeric selections: {', '.join(non_numeric)}.",
+            )
+            return
+
+        self.current_structured_values = list(
+            dict.fromkeys(
+                [
+                    column
+                    for column in self.current_structured_values
+                    if column not in selected_columns
+                ]
+                + selected_columns
+            )
+        )
+        self.current_structured_indexes = [
+            column for column in self.current_structured_indexes if column not in selected_columns
+        ]
+        self._refresh_role_assignments()
+        self.status_var.set(
+            f"Marked {len(selected_columns)} selected column(s) as structured value columns."
+        )
+
+    def clear_structured_assignment_from_selected_columns(self) -> None:
+        """Remove structured index/value assignments from the selected columns."""
+        selected_columns = self._selected_columns()
+        if not selected_columns:
+            messagebox.showerror(
+                "Structured Symbol Generation",
+                "Select one or more columns before clearing structured assignments.",
+            )
+            return
+
+        self.current_structured_indexes = [
+            column for column in self.current_structured_indexes if column not in selected_columns
+        ]
+        self.current_structured_values = [
+            column for column in self.current_structured_values if column not in selected_columns
+        ]
+        self._refresh_role_assignments()
+        self.status_var.set("Cleared structured assignments from selected column(s).")
+
     def _refresh_role_assignments(self, _event: object | None = None) -> None:
-        """Refresh the semantic role table for the current GUI selection."""
+        """Refresh the semantic and structured role tables for the current GUI selection."""
         self.roles_tree.delete(*self.roles_tree.get_children())
+        self.structured_tree.delete(*self.structured_tree.get_children())
         selected_columns = self._selected_columns()
         for column_name in selected_columns:
             self.roles_tree.insert(
@@ -519,6 +674,16 @@ class MySQLToGAMSApp:
                     column_name,
                     self.current_role_assignments.get(column_name, "(none)"),
                 ),
+            )
+            structured_role = "(none)"
+            if column_name in self.current_structured_indexes:
+                structured_role = "index"
+            elif column_name in self.current_structured_values:
+                structured_role = "value"
+            self.structured_tree.insert(
+                "",
+                END,
+                values=(column_name, structured_role),
             )
         self._refresh_readiness_panel()
 
@@ -623,6 +788,8 @@ class MySQLToGAMSApp:
             symbol_name=duplicated_symbol,
             where_clause=source_job.where_clause,
             semantic_roles=dict(source_job.semantic_roles),
+            structured_index_columns=list(source_job.structured_index_columns),
+            structured_value_columns=list(source_job.structured_value_columns),
         )
         self.import_jobs.append(duplicated_job)
         new_index = len(self.import_jobs) - 1
@@ -670,6 +837,8 @@ class MySQLToGAMSApp:
         self.max_rows_var.set(str(job.max_rows))
         self.where_var.set(job.where_clause)
         self.current_role_assignments = dict(job.semantic_roles)
+        self.current_structured_indexes = list(job.structured_index_columns)
+        self.current_structured_values = list(job.structured_value_columns)
 
         if self.repo is None:
             self._refresh_readiness_panel()
@@ -739,8 +908,20 @@ class MySQLToGAMSApp:
                         f"{column}:{role}" for column, role in sorted(job.semantic_roles.items())
                     )
                     or "(none)",
+                    self._format_structured_summary(job),
                 ),
             )
+
+    def _format_structured_summary(self, job: ImportJob) -> str:
+        """Describe the structured output request for basket display and dialogs."""
+        if not job.structured_index_columns or not job.structured_value_columns:
+            return "(generic fallback only)"
+        return (
+            "indexes="
+            + ",".join(job.structured_index_columns)
+            + " | values="
+            + ",".join(job.structured_value_columns)
+        )
 
     def preview_data(self) -> None:
         """Preview the current GUI selection without adding it to the basket."""
@@ -833,6 +1014,14 @@ class MySQLToGAMSApp:
                         "Generated semantic mapping",
                         str(artifacts.generated_semantic_mapping_include),
                     ),
+                    (
+                        "Generated structured declarations",
+                        str(artifacts.generated_structured_declarations_include),
+                    ),
+                    (
+                        "Generated structured assignments",
+                        str(artifacts.generated_structured_assignments_include),
+                    ),
                     ("Generated example consumer", str(artifacts.generated_example_model)),
                     ("Listing file", str(run_result.listing_file)),
                     ("Log file", str(run_result.log_file)),
@@ -853,6 +1042,11 @@ class MySQLToGAMSApp:
                 else ""
             )
             symbol_lines = "\n".join(f"- {symbol_name}(obs,col)" for symbol_name in artifacts.symbol_names)
+            structured_lines = "\n".join(
+                f"- {job.symbol_name}: {self._format_structured_summary(job)}"
+                for job in queued_jobs
+                if job.structured_index_columns and job.structured_value_columns
+            ) or "- No direct structured parameters were requested in this run."
             messagebox.showinfo(
                 "Export and Run Complete",
                 "Queued SQL imports were exported successfully and GAMS completed without errors.\n\n"
@@ -861,6 +1055,8 @@ class MySQLToGAMSApp:
                 f"Primary backward-compatible symbol: data(obs,col) from '{artifacts.primary_symbol_name}'\n"
                 "Reusable imported symbols created in this run:\n"
                 f"{symbol_lines}\n\n"
+                "Structured derived symbols requested in this run:\n"
+                f"{structured_lines}\n\n"
                 "Assigned semantic roles are available in the generated semantic mapping include.\n\n"
                 f"GDX data: {run_result.gdx_file}\n"
                 f"Import job folder: {artifacts.job_directory}\n"
@@ -869,6 +1065,8 @@ class MySQLToGAMSApp:
                 f"Symbol include: {artifacts.generated_symbol_include}\n"
                 f"Semantic declarations: {artifacts.generated_semantic_declarations_include}\n"
                 f"Semantic mapping include: {artifacts.generated_semantic_mapping_include}\n"
+                f"Structured declarations: {artifacts.generated_structured_declarations_include}\n"
+                f"Structured assignments: {artifacts.generated_structured_assignments_include}\n"
                 f"Example consumer: {artifacts.generated_example_model}\n"
                 f"Listing file: {run_result.listing_file}\n"
                 f"Log file: {run_result.log_file}",
@@ -900,6 +1098,27 @@ class MySQLToGAMSApp:
             if not numeric_selected:
                 readiness_warnings.append(
                     f"- {job.symbol_name}: no numeric columns are currently selected in table '{job.table_name}'"
+                )
+            if job.structured_value_columns and not job.structured_index_columns:
+                readiness_warnings.append(
+                    f"- {job.symbol_name}: structured value columns were selected without any structured index columns"
+                )
+            if job.structured_index_columns and not job.structured_value_columns:
+                readiness_warnings.append(
+                    f"- {job.symbol_name}: structured index columns were selected without any structured value columns"
+                )
+            if len(job.structured_index_columns) > 2:
+                readiness_warnings.append(
+                    f"- {job.symbol_name}: structured generation currently supports at most two index columns"
+                )
+            non_numeric_structured = [
+                column_name
+                for column_name in job.structured_value_columns
+                if column_name not in numeric_columns
+            ]
+            if non_numeric_structured:
+                readiness_warnings.append(
+                    f"- {job.symbol_name}: structured value columns must be numeric ({', '.join(non_numeric_structured)})"
                 )
 
         if readiness_warnings:

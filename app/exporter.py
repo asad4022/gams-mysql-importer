@@ -22,6 +22,8 @@ GENERATED_EXAMPLE_MODEL = "example_use_imported_symbols.gms"
 GENERATED_UNLOAD_INCLUDE = "generated_unload_symbols.gms"
 GENERATED_SEMANTIC_DECLARATIONS_INCLUDE = "generated_semantic_declarations.gms"
 GENERATED_SEMANTIC_MAPPING_INCLUDE = "generated_semantic_mapping.gms"
+GENERATED_STRUCTURED_DECLARATIONS_INCLUDE = "generated_structured_declarations.gms"
+GENERATED_STRUCTURED_ASSIGNMENTS_INCLUDE = "generated_structured_assignments.gms"
 
 SYMBOL_PATTERN = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 RESERVED_SYMBOL_NAMES = {
@@ -74,6 +76,49 @@ def validate_semantic_roles(selected_columns: list[str], semantic_roles: dict[st
             )
         cleaned[column_name] = normalized_role
     return cleaned
+
+
+def validate_structured_columns(
+    dataframe: pd.DataFrame,
+    selected_columns: list[str],
+    index_columns: list[str],
+    value_columns: list[str],
+) -> tuple[list[str], list[str]]:
+    """Validate optional structured symbol metadata for a queued import job."""
+    selected_set = set(selected_columns)
+    cleaned_indexes = [column for column in index_columns if column in selected_set]
+    cleaned_values = [column for column in value_columns if column in selected_set]
+
+    if not cleaned_indexes and not cleaned_values:
+        return [], []
+    if not cleaned_indexes or not cleaned_values:
+        raise ExportError(
+            "Structured symbol generation requires at least one index column and at least one value column."
+        )
+    if len(cleaned_indexes) > 2:
+        raise ExportError(
+            "Structured symbol generation currently supports at most two index columns per import job."
+        )
+
+    overlap = sorted(set(cleaned_indexes).intersection(cleaned_values))
+    if overlap:
+        raise ExportError(
+            "Structured index and value columns must be distinct. "
+            f"Overlap detected: {', '.join(overlap)}."
+        )
+
+    nonnumeric_values = [
+        column_name
+        for column_name in cleaned_values
+        if column_name not in dataframe.columns or not is_numeric_dtype(dataframe[column_name])
+    ]
+    if nonnumeric_values:
+        raise ExportError(
+            "Structured value columns must be numeric in the fetched result. "
+            f"Non-numeric value columns: {', '.join(nonnumeric_values)}."
+        )
+
+    return cleaned_indexes, cleaned_values
 
 
 def save_preview_csv(dataframe: pd.DataFrame, output_dir: Path) -> Path:
@@ -142,6 +187,12 @@ def export_import_jobs(
             )
         symbol_seen.add(symbol_name)
         validated_symbols.append(symbol_name)
+        validate_structured_columns(
+            materialized_job.dataframe,
+            materialized_job.job.selected_columns,
+            materialized_job.job.structured_index_columns,
+            materialized_job.job.structured_value_columns,
+        )
 
     preview_csv = save_preview_csv(jobs[0].dataframe, output_dir)
     legacy_long_csv = save_long_csv(jobs[0].dataframe, output_dir)
@@ -154,6 +205,8 @@ def export_import_jobs(
     generated_unload_include = gams_dir / GENERATED_UNLOAD_INCLUDE
     generated_semantic_declarations_include = gams_dir / GENERATED_SEMANTIC_DECLARATIONS_INCLUDE
     generated_semantic_mapping_include = gams_dir / GENERATED_SEMANTIC_MAPPING_INCLUDE
+    generated_structured_declarations_include = gams_dir / GENERATED_STRUCTURED_DECLARATIONS_INCLUDE
+    generated_structured_assignments_include = gams_dir / GENERATED_STRUCTURED_ASSIGNMENTS_INCLUDE
 
     _write_runtime_include(jobs, validated_symbols, generated_runtime_include)
     _write_semantic_mapping_includes(
@@ -161,6 +214,12 @@ def export_import_jobs(
         validated_symbols,
         generated_semantic_declarations_include,
         generated_semantic_mapping_include,
+    )
+    _write_structured_symbol_includes(
+        jobs,
+        validated_symbols,
+        generated_structured_declarations_include,
+        generated_structured_assignments_include,
     )
     _write_unload_include(jobs, validated_symbols, generated_unload_include)
     _write_symbol_include(jobs, validated_symbols, generated_symbol_include)
@@ -177,6 +236,8 @@ def export_import_jobs(
         generated_unload_include=generated_unload_include,
         generated_semantic_declarations_include=generated_semantic_declarations_include,
         generated_semantic_mapping_include=generated_semantic_mapping_include,
+        generated_structured_declarations_include=generated_structured_declarations_include,
+        generated_structured_assignments_include=generated_structured_assignments_include,
         symbol_names=validated_symbols,
         primary_symbol_name=validated_symbols[0],
     )
@@ -194,12 +255,20 @@ def _write_manifest(jobs: list[MaterializedImportJob], output_path: Path) -> Pat
                 "max_rows",
                 "where_clause",
                 "semantic_roles",
+                "structured_index_columns",
+                "structured_value_columns",
             ]
         )
         for materialized_job in jobs:
             semantic_roles = validate_semantic_roles(
                 materialized_job.job.selected_columns,
                 materialized_job.job.semantic_roles,
+            )
+            structured_indexes, structured_values = validate_structured_columns(
+                materialized_job.dataframe,
+                materialized_job.job.selected_columns,
+                materialized_job.job.structured_index_columns,
+                materialized_job.job.structured_value_columns,
             )
             writer.writerow(
                 [
@@ -209,6 +278,8 @@ def _write_manifest(jobs: list[MaterializedImportJob], output_path: Path) -> Pat
                     materialized_job.job.max_rows,
                     materialized_job.job.where_clause,
                     ";".join(f"{column}:{role}" for column, role in sorted(semantic_roles.items())),
+                    ",".join(structured_indexes),
+                    ",".join(structured_values),
                 ]
             )
     return output_path
@@ -229,12 +300,28 @@ def _safe_gams_description(text: str) -> str:
     return text.replace('"', "'")
 
 
+def _safe_gams_label(value: object) -> str:
+    """Escape a runtime value for use as a quoted GAMS label."""
+    return str(value).replace("'", "''")
+
+
 def _obs_set_name(symbol_name: str) -> str:
     return f"obs__{symbol_name}"
 
 
 def _col_set_name(symbol_name: str) -> str:
     return f"col__{symbol_name}"
+
+
+def _structured_index_set_name(symbol_name: str, position: int) -> str:
+    return f"structuredIndex{position}__{symbol_name}"
+
+
+def _structured_parameter_name(symbol_name: str, value_column: str) -> str:
+    normalized_value = re.sub(r"[^A-Za-z0-9_]", "_", value_column.strip()) or "value"
+    if normalized_value[0].isdigit():
+        normalized_value = f"value_{normalized_value}"
+    return validate_gams_symbol_name(f"{symbol_name}__{normalized_value}")
 
 
 def _write_runtime_include(
@@ -306,21 +393,6 @@ def _write_runtime_include(
 
     output_path.write_text("\n".join(lines), encoding="utf-8")
 
-
-def _write_unload_include(validated_symbols: list[str], output_path: Path) -> None:
-    """Generate the list of dynamically imported symbols for execute_unload."""
-    lines: list[str] = []
-    for symbol_name in validated_symbols:
-        lines.extend(
-            [
-                f"    {_obs_set_name(symbol_name)}",
-                f"    {_col_set_name(symbol_name)}",
-                f"    {symbol_name}",
-            ]
-        )
-    output_path.write_text("\n".join(lines) + ("\n" if lines else ""), encoding="utf-8")
-
-
 def _write_symbol_include(
     jobs: list[MaterializedImportJob],
     validated_symbols: list[str],
@@ -338,6 +410,18 @@ def _write_symbol_include(
     for symbol_name in validated_symbols:
         lines.append(f'    {_obs_set_name(symbol_name)}(*) "observation set for {symbol_name}"')
         lines.append(f'    {_col_set_name(symbol_name)}(*) "column set for {symbol_name}"')
+    for materialized_job, symbol_name in zip(jobs, validated_symbols, strict=True):
+        index_columns, _value_columns = validate_structured_columns(
+            materialized_job.dataframe,
+            materialized_job.job.selected_columns,
+            materialized_job.job.structured_index_columns,
+            materialized_job.job.structured_value_columns,
+        )
+        for position in range(1, len(index_columns) + 1):
+            lines.append(
+                f'    {_structured_index_set_name(symbol_name, position)}(*) '
+                f'"structured index set {position} for {symbol_name}"'
+            )
     lines[-1] = lines[-1] + ";"
 
     lines.extend(["", "Parameters", '    data(obs<, col<) "backward-compatible primary imported symbol"'])
@@ -354,6 +438,21 @@ def _write_symbol_include(
             lines.append(
                 f'    {role}__{symbol_name}({_obs_set_name(symbol_name)}<) "{role} mapping for {symbol_name}"'
             )
+        index_columns, value_columns = validate_structured_columns(
+            materialized_job.dataframe,
+            materialized_job.job.selected_columns,
+            materialized_job.job.structured_index_columns,
+            materialized_job.job.structured_value_columns,
+        )
+        for value_column in value_columns:
+            structured_name = _structured_parameter_name(symbol_name, value_column)
+            domains = ", ".join(
+                f"{_structured_index_set_name(symbol_name, position)}"
+                for position in range(1, len(index_columns) + 1)
+            )
+            lines.append(
+                f'    {structured_name}({domains}) "structured parameter for {symbol_name} from {value_column}"'
+            )
     lines[-1] = lines[-1] + ";"
 
     lines.extend(["", "$gdxin data/imported_data.gdx", "$load data"])
@@ -363,6 +462,17 @@ def _write_symbol_include(
             if role == "index":
                 continue
             lines.append(f"$load {role}__{symbol_name}")
+    for materialized_job, symbol_name in zip(jobs, validated_symbols, strict=True):
+        index_columns, value_columns = validate_structured_columns(
+            materialized_job.dataframe,
+            materialized_job.job.selected_columns,
+            materialized_job.job.structured_index_columns,
+            materialized_job.job.structured_value_columns,
+        )
+        for position in range(1, len(index_columns) + 1):
+            lines.append(f"$load {_structured_index_set_name(symbol_name, position)}")
+        for value_column in value_columns:
+            lines.append(f"$load {_structured_parameter_name(symbol_name, value_column)}")
     lines.extend(["$gdxin", ""])
 
     output_path.write_text("\n".join(lines), encoding="utf-8")
@@ -411,6 +521,15 @@ def _write_example_consumer(
     display_items.extend(
         f"profit__{symbol_name}" for symbol_name in validated_symbols[:2]
     )
+    for materialized_job, symbol_name in zip(jobs[:2], validated_symbols[:2], strict=True):
+        _index_columns, value_columns = validate_structured_columns(
+            materialized_job.dataframe,
+            materialized_job.job.selected_columns,
+            materialized_job.job.structured_index_columns,
+            materialized_job.job.structured_value_columns,
+        )
+        if value_columns:
+            display_items.append(_structured_parameter_name(symbol_name, value_columns[0]))
     lines.append("display " + ", ".join(display_items) + ";")
     lines.append("")
 
@@ -505,49 +624,145 @@ def _write_semantic_mapping_includes(
         for role in sorted(set(roles.values())):
             runtime_lines.append(f"{_role_request_set_name(symbol_name)}('{role}') = yes;")
         if not roles:
-            runtime_lines.append(f"* No semantic roles were requested for {symbol_name}.")
-
-        runtime_lines.extend(
-            [
-                f"{_role_materialized_set_name(symbol_name)}(semanticRole, {_col_set_name(symbol_name)}) = "
-                f"{_role_assignment_set_name(symbol_name)}(semanticRole, {_col_set_name(symbol_name)});",
-                f"{_role_match_count_name(symbol_name)}(semanticRole) = sum("
-                f"{_role_materialized_set_name(symbol_name)}(semanticRole, {_col_set_name(symbol_name)}), 1);",
-                f"{_role_scalar_name('semanticMissingCount', symbol_name)} = sum("
-                f"semanticRole$({_role_request_set_name(symbol_name)}(semanticRole) and not sameas(semanticRole, 'index') and "
-                f"{_role_match_count_name(symbol_name)}(semanticRole) = 0), "
-                "1);",
-                f"{_role_scalar_name('semanticAmbiguousCount', symbol_name)} = sum("
-                f"semanticRole$({_role_request_set_name(symbol_name)}(semanticRole) and not sameas(semanticRole, 'index') and "
-                f"{_role_match_count_name(symbol_name)}(semanticRole) > 1), "
-                "1);",
-                f"{_role_scalar_name('semanticMappingReady', symbol_name)} = "
-                f"({_role_scalar_name('semanticMissingCount', symbol_name)} = 0 and "
-                f"{_role_scalar_name('semanticAmbiguousCount', symbol_name)} = 0);",
-                f"{_role_value_name(symbol_name)}({_obs_set_name(symbol_name)}, semanticRole) = sum("
-                f"{_role_materialized_set_name(symbol_name)}(semanticRole, {_col_set_name(symbol_name)}), "
-                f"{symbol_name}({_obs_set_name(symbol_name)}, {_col_set_name(symbol_name)}));",
-            ]
-        )
-        for role in SEMANTIC_ROLES:
-            if role == "index":
-                continue
-            runtime_lines.append(
-                f"{role}__{symbol_name}({_obs_set_name(symbol_name)}) = "
-                f"{_role_value_name(symbol_name)}({_obs_set_name(symbol_name)}, '{role}');"
+            runtime_lines.extend(
+                [
+                    f"* No semantic roles were requested for {symbol_name}.",
+                    f"{_role_scalar_name('semanticMissingCount', symbol_name)} = 0;",
+                    f"{_role_scalar_name('semanticAmbiguousCount', symbol_name)} = 0;",
+                    f"{_role_scalar_name('semanticMappingReady', symbol_name)} = 1;",
+                    f"{_role_match_count_name(symbol_name)}(semanticRole) = 0;",
+                    f"{_role_value_name(symbol_name)}({_obs_set_name(symbol_name)}, semanticRole) = 0;",
+                    f"put_utility 'log' / 'SEMANTIC_ROLE_STATUS: {symbol_name} requested roles -> none';",
+                    "",
+                ]
             )
-        runtime_lines.extend(
-            [
-                f"put_utility 'log' / 'SEMANTIC_ROLE_STATUS: {symbol_name} requested roles -> {', '.join(f'{column}:{role}' for column, role in sorted(roles.items())) or 'none'}';",
-                f"put_utility 'log' / 'SEMANTIC_ROLE_RESULT: {symbol_name}';",
-                f"put_utility 'log' / '  missing=' {_role_scalar_name('semanticMissingCount', symbol_name)}:0:0;",
-                f"put_utility 'log' / '  ambiguous=' {_role_scalar_name('semanticAmbiguousCount', symbol_name)}:0:0;",
-                "",
-            ]
-        )
+        else:
+            runtime_lines.extend(
+                [
+                    f"{_role_materialized_set_name(symbol_name)}(semanticRole, {_col_set_name(symbol_name)}) = "
+                    f"{_role_assignment_set_name(symbol_name)}(semanticRole, {_col_set_name(symbol_name)});",
+                    f"{_role_match_count_name(symbol_name)}(semanticRole) = sum("
+                    f"{_role_materialized_set_name(symbol_name)}(semanticRole, {_col_set_name(symbol_name)}), 1);",
+                    f"{_role_scalar_name('semanticMissingCount', symbol_name)} = sum("
+                    f"semanticRole$({_role_request_set_name(symbol_name)}(semanticRole) and not sameas(semanticRole, 'index') and "
+                    f"{_role_match_count_name(symbol_name)}(semanticRole) = 0), "
+                    "1);",
+                    f"{_role_scalar_name('semanticAmbiguousCount', symbol_name)} = sum("
+                    f"semanticRole$({_role_request_set_name(symbol_name)}(semanticRole) and not sameas(semanticRole, 'index') and "
+                    f"{_role_match_count_name(symbol_name)}(semanticRole) > 1), "
+                    "1);",
+                    f"{_role_scalar_name('semanticMappingReady', symbol_name)} = "
+                    f"({_role_scalar_name('semanticMissingCount', symbol_name)} = 0 and "
+                    f"{_role_scalar_name('semanticAmbiguousCount', symbol_name)} = 0);",
+                    f"{_role_value_name(symbol_name)}({_obs_set_name(symbol_name)}, semanticRole) = sum("
+                    f"{_role_materialized_set_name(symbol_name)}(semanticRole, {_col_set_name(symbol_name)}), "
+                    f"{symbol_name}({_obs_set_name(symbol_name)}, {_col_set_name(symbol_name)}));",
+                ]
+            )
+            for role in SEMANTIC_ROLES:
+                if role == "index":
+                    continue
+                runtime_lines.append(
+                    f"{role}__{symbol_name}({_obs_set_name(symbol_name)}) = "
+                    f"{_role_value_name(symbol_name)}({_obs_set_name(symbol_name)}, '{role}');"
+                )
+            runtime_lines.extend(
+                [
+                    f"put_utility 'log' / 'SEMANTIC_ROLE_STATUS: {symbol_name} requested roles -> {', '.join(f'{column}:{role}' for column, role in sorted(roles.items()))}';",
+                    f"put_utility 'log' / 'SEMANTIC_ROLE_RESULT: {symbol_name}';",
+                    f"put_utility 'log' / '  missing=' {_role_scalar_name('semanticMissingCount', symbol_name)}:0:0;",
+                    f"put_utility 'log' / '  ambiguous=' {_role_scalar_name('semanticAmbiguousCount', symbol_name)}:0:0;",
+                    "",
+                ]
+            )
 
     declaration_output_path.write_text("\n".join(declaration_lines), encoding="utf-8")
     runtime_output_path.write_text("\n".join(runtime_lines), encoding="utf-8")
+
+
+def _write_structured_symbol_includes(
+    jobs: list[MaterializedImportJob],
+    validated_symbols: list[str],
+    declaration_output_path: Path,
+    assignment_output_path: Path,
+) -> None:
+    """Generate optional direct structured parameter declarations and assignments."""
+    declaration_lines: list[str] = [
+        "* Auto-generated structured symbol declarations for the current import basket.",
+        "* Structured symbols are additive. Generic imports remain available for every job.",
+        "",
+    ]
+    assignment_lines: list[str] = [
+        "* Auto-generated structured symbol assignments for the current import basket.",
+        "* Structured symbols are created only when index and value columns were supplied explicitly.",
+        "",
+    ]
+
+    for materialized_job, symbol_name in zip(jobs, validated_symbols, strict=True):
+        index_columns, value_columns = validate_structured_columns(
+            materialized_job.dataframe,
+            materialized_job.job.selected_columns,
+            materialized_job.job.structured_index_columns,
+            materialized_job.job.structured_value_columns,
+        )
+
+        if not index_columns or not value_columns:
+            assignment_lines.extend(
+                [
+                    f"* Structured symbol generation skipped for {symbol_name}: no explicit index/value structure supplied.",
+                    f"put_utility 'log' / 'STRUCTURED_SYMBOL_SKIPPED: {symbol_name}';",
+                    "",
+                ]
+            )
+            continue
+
+        table_name = _safe_gams_description(materialized_job.job.table_name)
+        declaration_lines.append(f"* Structured symbols for {symbol_name} from {table_name}")
+        for position, column_name in enumerate(index_columns, start=1):
+            unique_labels = [
+                f"'{_safe_gams_label(raw_value)}'"
+                for raw_value in materialized_job.dataframe[column_name].drop_duplicates()
+            ]
+            declaration_lines.append(
+                f'Set {_structured_index_set_name(symbol_name, position)}(*) '
+                f'"structured index set {position} from column {column_name} for {symbol_name}" '
+                f"/ {', '.join(unique_labels)} /;"
+            )
+
+        for value_column in value_columns:
+            structured_name = _structured_parameter_name(symbol_name, value_column)
+            domains = ", ".join(
+                f"{_structured_index_set_name(symbol_name, position)}"
+                for position in range(1, len(index_columns) + 1)
+            )
+            declaration_lines.append(
+                f'Parameter {structured_name}({domains}) '
+                f'"structured parameter derived from value column {value_column} for {symbol_name}";'
+            )
+        declaration_lines.append("")
+
+        assignment_lines.append(
+            f"put_utility 'log' / 'STRUCTURED_SYMBOL_READY: {symbol_name} indexes -> {', '.join(index_columns)}; values -> {', '.join(value_columns)}';"
+        )
+
+        for row in materialized_job.dataframe.itertuples(index=False, name=None):
+            row_mapping = dict(zip(materialized_job.dataframe.columns, row, strict=True))
+            index_labels = ", ".join(
+                f"'{_safe_gams_label(row_mapping[column_name])}'"
+                for column_name in index_columns
+            )
+            for value_column in value_columns:
+                value = row_mapping[value_column]
+                if pd.isna(value):
+                    continue
+                structured_name = _structured_parameter_name(symbol_name, value_column)
+                assignment_lines.append(
+                    f"{structured_name}({index_labels}) = {float(value)};"
+                )
+        assignment_lines.append("")
+
+    declaration_output_path.write_text("\n".join(declaration_lines), encoding="utf-8")
+    assignment_output_path.write_text("\n".join(assignment_lines), encoding="utf-8")
 
 
 def _write_unload_include(
@@ -556,6 +771,12 @@ def _write_unload_include(
     """Generate the list of imported and semantic symbols for execute_unload."""
     lines: list[str] = []
     for materialized_job, symbol_name in zip(jobs, validated_symbols, strict=True):
+        index_columns, value_columns = validate_structured_columns(
+            materialized_job.dataframe,
+            materialized_job.job.selected_columns,
+            materialized_job.job.structured_index_columns,
+            materialized_job.job.structured_value_columns,
+        )
         lines.extend(
             [
                 f"    {_obs_set_name(symbol_name)}",
@@ -572,6 +793,10 @@ def _write_unload_include(
             if role == "index":
                 continue
             lines.append(f"    {role}__{symbol_name}")
+        for position in range(1, len(index_columns) + 1):
+            lines.append(f"    {_structured_index_set_name(symbol_name, position)}")
+        for value_column in value_columns:
+            lines.append(f"    {_structured_parameter_name(symbol_name, value_column)}")
         lines.extend(
             [
                 f"    {_role_scalar_name('semanticMappingReady', symbol_name)}",

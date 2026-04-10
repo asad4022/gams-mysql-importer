@@ -28,6 +28,8 @@ class ImportJob:
     symbol_name: str
     where_clause: str = ""
     semantic_roles: dict[str, str] = field(default_factory=dict)
+    structured_index_columns: list[str] = field(default_factory=list)
+    structured_value_columns: list[str] = field(default_factory=list)
 
 
 @dataclass(slots=True)
@@ -52,5 +54,7 @@ class ExportArtifacts:
     generated_unload_include: Path
     generated_semantic_declarations_include: Path
     generated_semantic_mapping_include: Path
+    generated_structured_declarations_include: Path
+    generated_structured_assignments_include: Path
     symbol_names: list[str]
     primary_symbol_name: str

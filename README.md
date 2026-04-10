@@ -7,6 +7,10 @@ The current architecture supports two layers at the same time:
 - a backward-compatible primary symbol `data(obs,col)` for the first queued import job,
 - reusable named symbols such as `certificationData(obs,col)` and `laborCostData(obs,col)` that can be loaded later in arbitrary GAMS scripts.
 
+Phase 3 adds an optional third layer when the user provides enough structure information:
+
+- direct derived parameters such as `productsData__profit(i)` or `arcData__cost(i,j)` built from explicit index and value column choices.
+
 ## Motivation And Problem Solved
 
 Traditional SQL-to-GAMS workflows often leave too much manual work between data selection and model execution:
@@ -47,6 +51,7 @@ The application is split into small modules:
 - `gams/import_mapping.gms`: semantic mapping from imported column names to optional model-ready parameters.
 - `gams/optimization_example.gms`: optional resource-allocation LP example using the mapped primary symbol.
 - `gams/example_use_imported_symbols.gms`: separate GAMS consumer script showing how imported symbols can be reused.
+- `gams/example_use_structured_symbols.gms`: separate GAMS consumer script showing how direct structured symbols can be reused.
 
 High-level flow:
 
@@ -80,6 +85,7 @@ gams-mysql-importer/
 |   `-- .gitkeep
 |-- gams/
 |   |-- example_use_imported_symbols.gms
+|   |-- example_use_structured_symbols.gms
 |   |-- import_mapping.gms
 |   |-- model.gms
 |   |-- optimization_example.gms
@@ -105,6 +111,8 @@ Generated at runtime:
 - `gams/generated_import_runtime.gms`
 - `gams/generated_import_symbols.gms`
 - `gams/generated_unload_symbols.gms`
+- `gams/generated_structured_declarations.gms`
+- `gams/generated_structured_assignments.gms`
 - `gams/example_use_imported_symbols.gms` may be refreshed to reflect the current basket
 
 ## Prerequisites
@@ -197,27 +205,34 @@ The window title is `MySQL to GAMS Importer`.
    - `lower_bound`
    - `upper_bound`
 6. Click `Assign Role To Selected Columns` to record the current semantic choices.
-7. Review the `Pre-Run Readiness` panel to confirm:
+7. Optionally define direct structure for the current basket item:
+   - mark one or two columns as structured indexes
+   - mark one or more numeric columns as structured values
+8. Review the `Pre-Run Readiness` panel to confirm:
    - selected table
    - selected columns
    - symbol name
    - row limit
    - filter
+   - structured index columns
+   - structured value columns
    - whether the current selection includes at least one numeric column
-8. Click `Preview Current Selection` if you want to inspect the current form.
-9. Click `Add Import Job` to place the current selection in the import basket.
-10. Use `Load Selected Item Into Form`, `Update Selected Basket Item`, or `Duplicate Selected Basket Item` to refine basket entries without rebuilding them from scratch.
-11. Repeat for additional tables or symbol names.
-12. Review the `Import Basket`.
-13. Click `Export Basket and Run GAMS`.
+9. Click `Preview Current Selection` if you want to inspect the current form.
+10. Click `Add Import Job` to place the current selection in the import basket.
+11. Use `Load Selected Item Into Form`, `Update Selected Basket Item`, or `Duplicate Selected Basket Item` to refine basket entries without rebuilding them from scratch.
+12. Repeat for additional tables or symbol names.
+13. Review the `Import Basket`.
+14. Click `Export Basket and Run GAMS`.
 
 Professional behavior of the basket:
 
 - each job has its own source table, selected columns, row limit, filter text, and output symbol,
 - each job can also carry optional per-column semantic role assignments,
+- each job can also carry optional structured index and value assignments for direct parameter generation,
 - basket items can be loaded back into the form for editing and duplicated with a safe new symbol name,
 - the first queued job becomes the backward-compatible primary symbol `data(obs,col)`,
-- every queued job also produces its own reusable named symbol.
+- every queued job also produces its own reusable named symbol,
+- a structured basket item can also produce direct one- or two-dimensional GAMS parameters.
 
 ## Generated Outputs And Artifacts
 
@@ -239,6 +254,8 @@ Other important runtime outputs:
 - `gams/generated_import_symbols.gms`
 - `gams/generated_semantic_declarations.gms`
 - `gams/generated_semantic_mapping.gms`
+- `gams/generated_structured_declarations.gms`
+- `gams/generated_structured_assignments.gms`
 - `gams/generated_unload_symbols.gms`
 - GUI `Pre-Run Readiness` panel
 - GUI `Post-Run Results` panel
@@ -250,6 +267,8 @@ Meaning of the key files:
 - `generated_import_symbols.gms`: helper include for later `$gdxin` / `$load`
 - `generated_semantic_declarations.gms`: generated declarations for per-job semantic role symbols
 - `generated_semantic_mapping.gms`: generated semantic role assignments and mapped per-job parameters
+- `generated_structured_declarations.gms`: generated declarations for direct structured sets and parameters
+- `generated_structured_assignments.gms`: generated assignments for direct structured parameters
 - `generated_unload_symbols.gms`: generated unload list used by the main model
 - `gams_run.lst`: listing file for inspecting execution details
 - `gams_run.log`: log file for a concise execution trace
@@ -266,6 +285,7 @@ When the user executes the basket, the application:
 - writes one long-format CSV per queued symbol under `data/import_jobs/`,
 - generates GAMS helper include files for the current run,
 - generates semantic role includes for any queued jobs that have role assignments,
+- generates structured symbol includes for any queued jobs that have explicit index/value structure,
 - runs the equivalent of:
 
 ```powershell
@@ -315,10 +335,14 @@ This is the best way to confirm exactly what the SQL import produced before usin
   - use only a simple filter expression such as `Anno = 2023` or `profit > 0`
   - semicolons, SQL comments, joins, unions, and full SQL statements are blocked
 - The pre-run validation step checks that each queued import job still has at least one numeric column selected before GAMS is started.
+- Structured generation is opt-in and only activates when both of these are true:
+  - at least one structured index column is selected
+  - at least one numeric structured value column is selected
+- Structured generation currently supports up to two index columns for direct `param(i)` and `param(i,j)` style outputs.
 
 ## End-To-End Example
 
-The example below shows the full Phase 1 plus Phase 2 workflow in one pass.
+The example below shows the full Phase 1 plus Phase 2 plus Phase 3 workflow in one pass.
 
 ### In the GUI
 
@@ -333,13 +357,18 @@ The example below shows the full Phase 1 plus Phase 2 workflow in one pass.
    - `sku` -> `index`
    - `profit` -> `profit`
    - `capacity` -> `capacity`
-6. Confirm in `Pre-Run Readiness` that:
+6. Assign direct structure:
+   - structured index columns: `sku`
+   - structured value columns: `profit`, `capacity`
+7. Confirm in `Pre-Run Readiness` that:
    - the selected table is `PRODUCTS`
    - the selected columns are correct
    - the symbol name is `productsData`
+   - the structured index column is `sku`
+   - the structured value columns are `profit`, `capacity`
    - numeric columns are present
-7. Click `Add Import Job`.
-8. Click `Export Basket and Run GAMS`.
+8. Click `Add Import Job`.
+9. Click `Export Basket and Run GAMS`.
 
 ### What the run creates
 
@@ -348,6 +377,8 @@ After a successful run, the most important outputs are:
 - `data/imported_data.gdx`
 - `gams/generated_import_symbols.gms`
 - `gams/generated_semantic_mapping.gms`
+- `gams/generated_structured_declarations.gms`
+- `gams/generated_structured_assignments.gms`
 - `data/gams_run.lst`
 - `data/gams_run.log`
 
@@ -357,6 +388,8 @@ On the GAMS side, this single basket item gives you:
 - `productsData(obs__productsData,col__productsData)` as the reusable named symbol
 - `profit__productsData(obs__productsData)`
 - `capacity__productsData(obs__productsData)`
+- `productsData__profit(structuredIndex1__productsData)`
+- `productsData__capacity(structuredIndex1__productsData)`
 
 ### In a downstream GAMS script
 
@@ -365,26 +398,33 @@ You can then load and use the generated symbols in a separate model:
 ```gams
 Sets
     obs__productsData(*)
-    col__productsData(*);
+    col__productsData(*)
+    structuredIndex1__productsData(*);
 
 Parameters
     productsData(obs__productsData<, col__productsData<)
     profit__productsData(obs__productsData<)
-    capacity__productsData(obs__productsData<);
+    capacity__productsData(obs__productsData<)
+    productsData__profit(structuredIndex1__productsData)
+    productsData__capacity(structuredIndex1__productsData);
 
 $gdxin data/imported_data.gdx
 $load productsData
 $load profit__productsData
 $load capacity__productsData
+$load structuredIndex1__productsData
+$load productsData__profit
+$load productsData__capacity
 $gdxin
 
-display productsData, profit__productsData, capacity__productsData;
+display productsData, profit__productsData, capacity__productsData, productsData__profit, productsData__capacity;
 ```
 
 This is the intended bridge:
 
 - the GUI prepares a safe import basket,
 - GAMS receives reusable symbols,
+- GAMS also receives direct structured parameters when the basket item was explicitly structured,
 - downstream GAMS code loads those symbols from `imported_data.gdx` without repeating the SQL selection logic.
 
 ## How To Use Imported SQL Data In Your Own GAMS Model
@@ -472,6 +512,65 @@ $load resourcesData
 $gdxin
 
 display productsData, resourcesData;
+```
+
+## Structured Symbol Generation
+
+Phase 3 adds an opt-in direct-structure layer on top of the generic imports.
+
+If the user explicitly assigns:
+
+- one or two structured index columns
+- one or more structured numeric value columns
+
+then the exporter generates direct GAMS parameters in addition to the generic fallback symbol.
+
+For example, if a basket item is configured as:
+
+- table: `PRODUCTS`
+- selected columns: `sku`, `profit`, `capacity`
+- output symbol: `productsData`
+- structured index columns: `sku`
+- structured value columns: `profit`, `capacity`
+
+then the run still creates the generic symbol:
+
+- `productsData(obs__productsData,col__productsData)`
+
+and also creates direct structured parameters:
+
+- `productsData__profit(structuredIndex1__productsData)`
+- `productsData__capacity(structuredIndex1__productsData)`
+
+If a basket item uses two structured index columns, the generated direct parameter becomes two-dimensional, for example:
+
+- `arcData__cost(structuredIndex1__arcData, structuredIndex2__arcData)`
+
+Important behavior:
+
+- generic imports are always preserved
+- structured generation is opt-in
+- structured generation is currently limited to one or two index columns
+- structured value columns must be numeric
+- if structured information is incomplete, the generic symbol still works and the structured layer is skipped safely
+
+### Example structured load in downstream GAMS
+
+```gams
+Sets
+    structuredIndex1__productsData(*);
+
+Parameters
+    productsData__profit(structuredIndex1__productsData)
+    productsData__capacity(structuredIndex1__productsData);
+
+$gdxin data/imported_data.gdx
+$load structuredIndex1__productsData
+$load productsData__profit
+$load productsData__capacity
+$gdxin
+
+display productsData__profit, productsData__capacity;
 ```
 
 ## Semantic Role Assignment
@@ -611,21 +710,22 @@ Practical runtime verification:
 2. Queue one or more import jobs.
 3. Confirm the `Pre-Run Readiness` panel looks correct.
 4. Run `Export Basket and Run GAMS`.
-4. Confirm that:
+5. Confirm that:
    - `data/imported_data.gdx` exists
    - `data/gams_run.lst` exists
    - `data/gams_run.log` exists
    - generated helper files exist under `gams/`
-5. Confirm the `Post-Run Results` panel lists the generated artifact locations.
-6. Open or include `gams/generated_import_symbols.gms` from another GAMS script.
+6. Confirm the `Post-Run Results` panel lists the generated artifact locations.
+7. Open or include `gams/generated_import_symbols.gms` from another GAMS script.
 
 ## Current Assumptions And Limitations
 
 - Imported GAMS symbols are currently numeric parameter-style symbols in the standardized form `<symbolName>(obs,col)`.
-- The current `Filter / WHERE` box supports only a conservative simple SQL filter expression; it is not a full SQL editor.
+- Direct structured generation currently supports one- and two-dimensional parameters only.
+- The current `Filter expression` box supports only a conservative simple SQL filter expression; it is not a full SQL editor.
 - The first queued job is treated as the backward-compatible primary symbol `data(obs,col)`.
 - Semantic role assignment now works across queued jobs, but the older demo optimization still solves only from the backward-compatible primary symbol `data(obs,col)`.
-- Direct automatic inference of richer structures such as `parameter cost(i,t)` is not yet implemented.
+- Direct automatic inference of richer structures such as `parameter cost(i,t)` without explicit structure choices is not yet implemented.
 - Semantic roles remain user-assigned metadata; the project does not yet infer richer dimensions such as `cost(i,j)` automatically.
 - Import jobs with nonnumeric selected results cannot currently become GAMS parameters.
 - Local verification of the GAMS run requires a working GAMS installation on the machine.
@@ -641,6 +741,7 @@ Practical runtime verification:
 ## Roadmap / Future Improvements
 
 - Infer richer index/value structures automatically when a job clearly has identifier columns plus one value column.
+- Extend direct structured generation beyond two index dimensions when a modeling workflow requires it.
 - Externalize semantic role mapping to JSON or YAML configuration instead of the current generated GAMS include.
 - Add per-job preview snapshots inside the basket.
 - Add saved import basket templates for repeated data workflows.

@@ -8,6 +8,8 @@ $title MySQL to GAMS Importer Demo Model
 *   - gams/generated_import_symbols.gms
 *   - gams/generated_semantic_declarations.gms
 *   - gams/generated_semantic_mapping.gms
+*   - gams/generated_structured_declarations.gms
+*   - gams/generated_structured_assignments.gms
 *   - gams/example_use_imported_symbols.gms
 *
 * The first queued import job is also exposed as the backward-compatible
@@ -18,6 +20,8 @@ $if not exist "gams/generated_import_runtime.gms" $abort "No generated import co
 $if not exist "gams/generated_unload_symbols.gms" $abort "No generated unload symbol list found. Add import jobs in the GUI and export again."
 $if not exist "gams/generated_semantic_declarations.gms" $abort "No generated semantic declarations found. Add import jobs in the GUI and export again."
 $if not exist "gams/generated_semantic_mapping.gms" $abort "No generated semantic mapping found. Add import jobs in the GUI and export again."
+$if not exist "gams/generated_structured_declarations.gms" $abort "No generated structured declarations found. Add import jobs in the GUI and export again."
+$if not exist "gams/generated_structured_assignments.gms" $abort "No generated structured assignments found. Add import jobs in the GUI and export again."
 
 $include "gams/generated_import_runtime.gms"
 
@@ -50,6 +54,7 @@ Scalar
     objectiveValue        "objective value from optimization example";
 
 $include "gams/generated_semantic_declarations.gms"
+$include "gams/generated_structured_declarations.gms"
 
 Positive Variable
     x(obs) "decision variable: activity level for each observation";
@@ -66,6 +71,7 @@ nCol = card(col);
 meanByColumn(col)$(card(obs) > 0) = sum(obs, data(obs, col)) / card(obs);
 
 $include "gams/generated_semantic_mapping.gms"
+$include "gams/generated_structured_assignments.gms"
 $include "gams/import_mapping.gms"
 $include "gams/optimization_example.gms"
 
