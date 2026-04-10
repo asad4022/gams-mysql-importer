@@ -83,10 +83,11 @@ def test_export_import_jobs_generates_runtime_and_consumer_files(tmp_path: Path)
     symbol_text = artifacts.generated_symbol_include.read_text(encoding="utf-8")
     example_text = artifacts.generated_example_model.read_text(encoding="utf-8")
 
-    assert "newName: certificationData" in runtime_text
-    assert "newName: laborCostData" in runtime_text
-    assert "newName: data" in runtime_text
-    assert "$load obs col data" in symbol_text
-    assert "$load obs__certificationData col__certificationData certificationData" in symbol_text
+    assert "name: certificationData" in runtime_text
+    assert "name: laborCostData" in runtime_text
+    assert "name: data" in runtime_text
+    assert "$load data" in symbol_text
+    assert "$load certificationData" in symbol_text
+    assert "$load laborCostData" in symbol_text
     assert "display data, totalPrimaryData, certificationData, laborCostData" in example_text
     assert artifacts.primary_symbol_name == "certificationData"
