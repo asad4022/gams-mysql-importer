@@ -62,18 +62,20 @@ def test_export_import_jobs_generates_runtime_and_consumer_files(tmp_path: Path)
                 selected_columns=["profit", "capacity"],
                 max_rows=5,
                 symbol_name="certificationData",
+                semantic_roles={"profit": "profit", "capacity": "capacity"},
             ),
             dataframe=pd.DataFrame({"profit": [10, 20], "capacity": [1, 2]}),
         ),
         MaterializedImportJob(
             job=ImportJob(
                 table_name="COSTO_LAVORO",
-                selected_columns=["cost"],
+                selected_columns=["resource_id", "cost"],
                 max_rows=5,
                 symbol_name="laborCostData",
                 where_clause="Anno = 2023",
+                semantic_roles={"resource_id": "index", "cost": "cost"},
             ),
-            dataframe=pd.DataFrame({"cost": [5, 6]}),
+            dataframe=pd.DataFrame({"resource_id": [101, 102], "cost": [5, 6]}),
         ),
     ]
 
@@ -82,6 +84,13 @@ def test_export_import_jobs_generates_runtime_and_consumer_files(tmp_path: Path)
     runtime_text = artifacts.generated_runtime_include.read_text(encoding="utf-8")
     symbol_text = artifacts.generated_symbol_include.read_text(encoding="utf-8")
     example_text = artifacts.generated_example_model.read_text(encoding="utf-8")
+    semantic_declarations_text = artifacts.generated_semantic_declarations_include.read_text(
+        encoding="utf-8"
+    )
+    semantic_mapping_text = artifacts.generated_semantic_mapping_include.read_text(
+        encoding="utf-8"
+    )
+    manifest_text = artifacts.manifest_csv.read_text(encoding="utf-8")
 
     assert "name: certificationData" in runtime_text
     assert "name: laborCostData" in runtime_text
@@ -89,5 +98,14 @@ def test_export_import_jobs_generates_runtime_and_consumer_files(tmp_path: Path)
     assert "$load data" in symbol_text
     assert "$load certificationData" in symbol_text
     assert "$load laborCostData" in symbol_text
+    assert "$load profit__certificationData" in symbol_text
+    assert "$load cost__laborCostData" in symbol_text
     assert "display data, totalPrimaryData, certificationData, laborCostData" in example_text
+    assert "Set requestedSemanticRole__certificationData(semanticRole)" in semantic_declarations_text
+    assert "Parameter profit__certificationData(obs__certificationData)" in semantic_declarations_text
+    assert "requestedSemanticRole__certificationData('profit') = yes;" in semantic_mapping_text
+    assert "requestedSemanticRole__laborCostData('index') = yes;" in semantic_mapping_text
+    assert "semanticMappingReady__laborCostData" in semantic_mapping_text
+    assert "profit:profit" in manifest_text
+    assert "resource_id:index" in manifest_text
     assert artifacts.primary_symbol_name == "certificationData"

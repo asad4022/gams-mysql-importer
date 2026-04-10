@@ -12,7 +12,13 @@ totalPrimaryData = sum((obs, col), data(obs, col));
 Scalar total__productsData "sum of all values in productsData";
 total__productsData = sum((obs__productsData, col__productsData), productsData(obs__productsData, col__productsData));
 
+Scalar totalProfit__productsData "sum of mapped profit values for productsData";
+totalProfit__productsData = sum((obs__productsData), profit__productsData(obs__productsData));
+
 Scalar total__resourcesData "sum of all values in resourcesData";
 total__resourcesData = sum((obs__resourcesData, col__resourcesData), resourcesData(obs__resourcesData, col__resourcesData));
 
-display data, totalPrimaryData, productsData, resourcesData, total__productsData, total__resourcesData;
+Scalar totalProfit__resourcesData "sum of mapped profit values for resourcesData";
+totalProfit__resourcesData = sum((obs__resourcesData), profit__resourcesData(obs__resourcesData));
+
+display data, totalPrimaryData, productsData, resourcesData, total__productsData, total__resourcesData, profit__productsData, profit__resourcesData;

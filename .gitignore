@@ -27,9 +27,12 @@ data/import_jobs/
 gams/generated_import_runtime.gms
 gams/generated_import_symbols.gms
 gams/generated_unload_symbols.gms
+gams/generated_semantic_declarations.gms
+gams/generated_semantic_mapping.gms
 gams/*.log
 gams/*.lst
 gams/*.lxi
+model.log
 model.lst
 
 # OS and editor artifacts

@@ -9,7 +9,7 @@ from pathlib import Path
 import pandas as pd
 from pandas.api.types import is_numeric_dtype
 
-from .models import ExportArtifacts, MaterializedImportJob
+from .models import ExportArtifacts, MaterializedImportJob, SEMANTIC_ROLES
 
 
 PREVIEW_FILENAME = "exported_preview.csv"
@@ -20,6 +20,8 @@ GENERATED_RUNTIME_INCLUDE = "generated_import_runtime.gms"
 GENERATED_SYMBOL_INCLUDE = "generated_import_symbols.gms"
 GENERATED_EXAMPLE_MODEL = "example_use_imported_symbols.gms"
 GENERATED_UNLOAD_INCLUDE = "generated_unload_symbols.gms"
+GENERATED_SEMANTIC_DECLARATIONS_INCLUDE = "generated_semantic_declarations.gms"
+GENERATED_SEMANTIC_MAPPING_INCLUDE = "generated_semantic_mapping.gms"
 
 SYMBOL_PATTERN = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 RESERVED_SYMBOL_NAMES = {
@@ -33,6 +35,7 @@ RESERVED_SYMBOL_NAMES = {
     "demand",
     "mappingReady",
     "optimizationSolved",
+    "semanticRole",
 }
 
 
@@ -55,6 +58,22 @@ def validate_gams_symbol_name(symbol_name: str) -> str:
             f"Output symbol name '{normalized}' is reserved. Choose a different symbol name."
         )
     return normalized
+
+
+def validate_semantic_roles(selected_columns: list[str], semantic_roles: dict[str, str]) -> dict[str, str]:
+    """Validate semantic role assignments for a queued import job."""
+    selected_set = set(selected_columns)
+    cleaned: dict[str, str] = {}
+    for column_name, role in semantic_roles.items():
+        if column_name not in selected_set:
+            continue
+        normalized_role = role.strip().lower()
+        if normalized_role not in SEMANTIC_ROLES:
+            raise ExportError(
+                f"Unsupported semantic role '{role}' for column '{column_name}'."
+            )
+        cleaned[column_name] = normalized_role
+    return cleaned
 
 
 def save_preview_csv(dataframe: pd.DataFrame, output_dir: Path) -> Path:
@@ -133,9 +152,17 @@ def export_import_jobs(
     generated_symbol_include = gams_dir / GENERATED_SYMBOL_INCLUDE
     generated_example_model = gams_dir / GENERATED_EXAMPLE_MODEL
     generated_unload_include = gams_dir / GENERATED_UNLOAD_INCLUDE
+    generated_semantic_declarations_include = gams_dir / GENERATED_SEMANTIC_DECLARATIONS_INCLUDE
+    generated_semantic_mapping_include = gams_dir / GENERATED_SEMANTIC_MAPPING_INCLUDE
 
     _write_runtime_include(jobs, validated_symbols, generated_runtime_include)
-    _write_unload_include(validated_symbols, generated_unload_include)
+    _write_semantic_mapping_includes(
+        jobs,
+        validated_symbols,
+        generated_semantic_declarations_include,
+        generated_semantic_mapping_include,
+    )
+    _write_unload_include(jobs, validated_symbols, generated_unload_include)
     _write_symbol_include(jobs, validated_symbols, generated_symbol_include)
     _write_example_consumer(jobs, validated_symbols, generated_example_model)
 
@@ -148,6 +175,8 @@ def export_import_jobs(
         generated_symbol_include=generated_symbol_include,
         generated_example_model=generated_example_model,
         generated_unload_include=generated_unload_include,
+        generated_semantic_declarations_include=generated_semantic_declarations_include,
+        generated_semantic_mapping_include=generated_semantic_mapping_include,
         symbol_names=validated_symbols,
         primary_symbol_name=validated_symbols[0],
     )
@@ -158,9 +187,20 @@ def _write_manifest(jobs: list[MaterializedImportJob], output_path: Path) -> Pat
     with output_path.open("w", newline="", encoding="utf-8") as handle:
         writer = csv.writer(handle)
         writer.writerow(
-            ["symbol_name", "table_name", "selected_columns", "max_rows", "where_clause"]
+            [
+                "symbol_name",
+                "table_name",
+                "selected_columns",
+                "max_rows",
+                "where_clause",
+                "semantic_roles",
+            ]
         )
         for materialized_job in jobs:
+            semantic_roles = validate_semantic_roles(
+                materialized_job.job.selected_columns,
+                materialized_job.job.semantic_roles,
+            )
             writer.writerow(
                 [
                     materialized_job.job.symbol_name,
@@ -168,6 +208,7 @@ def _write_manifest(jobs: list[MaterializedImportJob], output_path: Path) -> Pat
                     ",".join(materialized_job.job.selected_columns),
                     materialized_job.job.max_rows,
                     materialized_job.job.where_clause,
+                    ";".join(f"{column}:{role}" for column, role in sorted(semantic_roles.items())),
                 ]
             )
     return output_path
@@ -307,11 +348,21 @@ def _write_symbol_include(
         lines.append(
             f'    {symbol_name}({_obs_set_name(symbol_name)}<, {_col_set_name(symbol_name)}<) "{description}"'
         )
+        for role in SEMANTIC_ROLES:
+            if role == "index":
+                continue
+            lines.append(
+                f'    {role}__{symbol_name}({_obs_set_name(symbol_name)}<) "{role} mapping for {symbol_name}"'
+            )
     lines[-1] = lines[-1] + ";"
 
     lines.extend(["", "$gdxin data/imported_data.gdx", "$load data"])
     for symbol_name in validated_symbols:
         lines.append(f"$load {symbol_name}")
+        for role in SEMANTIC_ROLES:
+            if role == "index":
+                continue
+            lines.append(f"$load {role}__{symbol_name}")
     lines.extend(["$gdxin", ""])
 
     output_path.write_text("\n".join(lines), encoding="utf-8")
@@ -347,10 +398,185 @@ def _write_example_consumer(
                 "",
             ]
         )
+        lines.extend(
+            [
+                f'Scalar totalProfit__{symbol_name} "sum of mapped profit values for {symbol_name}";',
+                f"totalProfit__{symbol_name} = sum(({_obs_set_name(symbol_name)}), profit__{symbol_name}({_obs_set_name(symbol_name)}));",
+                "",
+            ]
+        )
 
     display_items = ["data", "totalPrimaryData", *validated_symbols[:2]]
     display_items.extend(f"total__{symbol_name}" for symbol_name in validated_symbols[:2])
+    display_items.extend(
+        f"profit__{symbol_name}" for symbol_name in validated_symbols[:2]
+    )
     lines.append("display " + ", ".join(display_items) + ";")
     lines.append("")
 
     output_path.write_text("\n".join(lines), encoding="utf-8")
+
+
+def _role_assignment_set_name(symbol_name: str) -> str:
+    return f"requestedSemanticColumn__{symbol_name}"
+
+
+def _role_request_set_name(symbol_name: str) -> str:
+    return f"requestedSemanticRole__{symbol_name}"
+
+
+def _role_materialized_set_name(symbol_name: str) -> str:
+    return f"semanticColumn__{symbol_name}"
+
+
+def _role_match_count_name(symbol_name: str) -> str:
+    return f"semanticRoleMatchCount__{symbol_name}"
+
+
+def _role_value_name(symbol_name: str) -> str:
+    return f"semanticValue__{symbol_name}"
+
+
+def _role_scalar_name(prefix: str, symbol_name: str) -> str:
+    return f"{prefix}__{symbol_name}"
+
+
+def _write_semantic_mapping_includes(
+    jobs: list[MaterializedImportJob],
+    validated_symbols: list[str],
+    declaration_output_path: Path,
+    runtime_output_path: Path,
+) -> None:
+    """Generate symbol-specific semantic role declarations and assignments."""
+    declaration_lines: list[str] = [
+        "* Auto-generated semantic role declarations for the current import basket.",
+        "",
+    ]
+    runtime_lines: list[str] = [
+        "* Auto-generated semantic role mapping for the current import basket.",
+        "* Semantic roles are advisory metadata from the GUI. Generic symbol imports remain available even when mappings are incomplete.",
+        "",
+    ]
+
+    for materialized_job, symbol_name in zip(jobs, validated_symbols, strict=True):
+        roles = validate_semantic_roles(
+            materialized_job.job.selected_columns,
+            materialized_job.job.semantic_roles,
+        )
+        table_name = _safe_gams_description(materialized_job.job.table_name)
+        declaration_lines.extend(
+            [
+                f"* Semantic mapping for {symbol_name} from {table_name}",
+                f"Set {_role_assignment_set_name(symbol_name)}(semanticRole, *) "
+                f'"requested semantic role assignments from the GUI for {symbol_name}";',
+                f"Set {_role_request_set_name(symbol_name)}(semanticRole) "
+                f'"semantic roles requested for {symbol_name}";',
+                f"Set {_role_materialized_set_name(symbol_name)}(semanticRole, {_col_set_name(symbol_name)}) "
+                f'"materialized semantic role assignments for {symbol_name}";',
+                f"Parameter {_role_match_count_name(symbol_name)}(semanticRole) "
+                f'"number of materialized columns assigned to each semantic role for {symbol_name}";',
+                f"Parameter {_role_value_name(symbol_name)}({_obs_set_name(symbol_name)}, semanticRole) "
+                f'"role-oriented view of imported values for {symbol_name}";',
+            ]
+        )
+        for role in SEMANTIC_ROLES:
+            if role == "index":
+                continue
+            declaration_lines.append(
+                f"Parameter {role}__{symbol_name}({_obs_set_name(symbol_name)}) "
+                f'"mapped {role} parameter for {symbol_name}";'
+            )
+        declaration_lines.extend(
+            [
+                f"Scalar {_role_scalar_name('semanticMappingReady', symbol_name)} "
+                f'"1 if non-index semantic roles for {symbol_name} were materialized without ambiguity";',
+                f"Scalar {_role_scalar_name('semanticMissingCount', symbol_name)} "
+                f'"number of requested roles for {symbol_name} that were not materialized";',
+                f"Scalar {_role_scalar_name('semanticAmbiguousCount', symbol_name)} "
+                f'"number of requested roles for {symbol_name} that matched multiple columns";',
+                "",
+            ]
+        )
+
+        for column_name, role in sorted(roles.items()):
+            runtime_lines.append(
+                f"{_role_assignment_set_name(symbol_name)}('{role}','{column_name}') = yes;"
+            )
+        for role in sorted(set(roles.values())):
+            runtime_lines.append(f"{_role_request_set_name(symbol_name)}('{role}') = yes;")
+        if not roles:
+            runtime_lines.append(f"* No semantic roles were requested for {symbol_name}.")
+
+        runtime_lines.extend(
+            [
+                f"{_role_materialized_set_name(symbol_name)}(semanticRole, {_col_set_name(symbol_name)}) = "
+                f"{_role_assignment_set_name(symbol_name)}(semanticRole, {_col_set_name(symbol_name)});",
+                f"{_role_match_count_name(symbol_name)}(semanticRole) = sum("
+                f"{_role_materialized_set_name(symbol_name)}(semanticRole, {_col_set_name(symbol_name)}), 1);",
+                f"{_role_scalar_name('semanticMissingCount', symbol_name)} = sum("
+                f"semanticRole$({_role_request_set_name(symbol_name)}(semanticRole) and not sameas(semanticRole, 'index') and "
+                f"{_role_match_count_name(symbol_name)}(semanticRole) = 0), "
+                "1);",
+                f"{_role_scalar_name('semanticAmbiguousCount', symbol_name)} = sum("
+                f"semanticRole$({_role_request_set_name(symbol_name)}(semanticRole) and not sameas(semanticRole, 'index') and "
+                f"{_role_match_count_name(symbol_name)}(semanticRole) > 1), "
+                "1);",
+                f"{_role_scalar_name('semanticMappingReady', symbol_name)} = "
+                f"({_role_scalar_name('semanticMissingCount', symbol_name)} = 0 and "
+                f"{_role_scalar_name('semanticAmbiguousCount', symbol_name)} = 0);",
+                f"{_role_value_name(symbol_name)}({_obs_set_name(symbol_name)}, semanticRole) = sum("
+                f"{_role_materialized_set_name(symbol_name)}(semanticRole, {_col_set_name(symbol_name)}), "
+                f"{symbol_name}({_obs_set_name(symbol_name)}, {_col_set_name(symbol_name)}));",
+            ]
+        )
+        for role in SEMANTIC_ROLES:
+            if role == "index":
+                continue
+            runtime_lines.append(
+                f"{role}__{symbol_name}({_obs_set_name(symbol_name)}) = "
+                f"{_role_value_name(symbol_name)}({_obs_set_name(symbol_name)}, '{role}');"
+            )
+        runtime_lines.extend(
+            [
+                f"put_utility 'log' / 'SEMANTIC_ROLE_STATUS: {symbol_name} requested roles -> {', '.join(f'{column}:{role}' for column, role in sorted(roles.items())) or 'none'}';",
+                f"put_utility 'log' / 'SEMANTIC_ROLE_RESULT: {symbol_name}';",
+                f"put_utility 'log' / '  missing=' {_role_scalar_name('semanticMissingCount', symbol_name)}:0:0;",
+                f"put_utility 'log' / '  ambiguous=' {_role_scalar_name('semanticAmbiguousCount', symbol_name)}:0:0;",
+                "",
+            ]
+        )
+
+    declaration_output_path.write_text("\n".join(declaration_lines), encoding="utf-8")
+    runtime_output_path.write_text("\n".join(runtime_lines), encoding="utf-8")
+
+
+def _write_unload_include(
+    jobs: list[MaterializedImportJob], validated_symbols: list[str], output_path: Path
+) -> None:
+    """Generate the list of imported and semantic symbols for execute_unload."""
+    lines: list[str] = []
+    for materialized_job, symbol_name in zip(jobs, validated_symbols, strict=True):
+        lines.extend(
+            [
+                f"    {_obs_set_name(symbol_name)}",
+                f"    {_col_set_name(symbol_name)}",
+                f"    {symbol_name}",
+                f"    {_role_assignment_set_name(symbol_name)}",
+                f"    {_role_request_set_name(symbol_name)}",
+                f"    {_role_materialized_set_name(symbol_name)}",
+                f"    {_role_match_count_name(symbol_name)}",
+                f"    {_role_value_name(symbol_name)}",
+            ]
+        )
+        for role in SEMANTIC_ROLES:
+            if role == "index":
+                continue
+            lines.append(f"    {role}__{symbol_name}")
+        lines.extend(
+            [
+                f"    {_role_scalar_name('semanticMappingReady', symbol_name)}",
+                f"    {_role_scalar_name('semanticMissingCount', symbol_name)}",
+                f"    {_role_scalar_name('semanticAmbiguousCount', symbol_name)}",
+            ]
+        )
+    output_path.write_text("\n".join(lines) + ("\n" if lines else ""), encoding="utf-8")

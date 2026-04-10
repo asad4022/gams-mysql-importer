@@ -187,15 +187,25 @@ The window title is `MySQL to GAMS Importer`.
    - `Output symbol`
    - `Max rows`
    - optional `Filter / WHERE`
-5. Click `Preview Current Selection` if you want to inspect the current form.
-6. Click `Add Import Job` to place the current selection in the import basket.
-7. Repeat for additional tables or symbol names.
-8. Review the `Import Basket`.
-9. Click `Export Basket and Run GAMS`.
+5. Optionally assign semantic roles to selected columns:
+   - `index`
+   - `profit`
+   - `capacity`
+   - `demand`
+   - `cost`
+   - `lower_bound`
+   - `upper_bound`
+6. Click `Assign Role To Selected Columns` to record the current semantic choices.
+7. Click `Preview Current Selection` if you want to inspect the current form.
+8. Click `Add Import Job` to place the current selection in the import basket.
+9. Repeat for additional tables or symbol names.
+10. Review the `Import Basket`.
+11. Click `Export Basket and Run GAMS`.
 
 Professional behavior of the basket:
 
 - each job has its own source table, selected columns, row limit, filter text, and output symbol,
+- each job can also carry optional per-column semantic role assignments,
 - the first queued job becomes the backward-compatible primary symbol `data(obs,col)`,
 - every queued job also produces its own reusable named symbol.
 
@@ -217,6 +227,8 @@ Other important runtime outputs:
 - `data/gams_run.log`
 - `gams/generated_import_runtime.gms`
 - `gams/generated_import_symbols.gms`
+- `gams/generated_semantic_declarations.gms`
+- `gams/generated_semantic_mapping.gms`
 - `gams/generated_unload_symbols.gms`
 
 Meaning of the key files:
@@ -224,6 +236,8 @@ Meaning of the key files:
 - `imported_data.gdx`: reusable GAMS database containing all imported symbols
 - `generated_import_runtime.gms`: generated import declarations and Connect block for the current run
 - `generated_import_symbols.gms`: helper include for later `$gdxin` / `$load`
+- `generated_semantic_declarations.gms`: generated declarations for per-job semantic role symbols
+- `generated_semantic_mapping.gms`: generated semantic role assignments and mapped per-job parameters
 - `generated_unload_symbols.gms`: generated unload list used by the main model
 - `gams_run.lst`: listing file for inspecting execution details
 - `gams_run.log`: log file for a concise execution trace
@@ -237,6 +251,7 @@ When the user executes the basket, the application:
 - writes `data/exported_data_long.csv` for the first queued job to preserve backward compatibility,
 - writes one long-format CSV per queued symbol under `data/import_jobs/`,
 - generates GAMS helper include files for the current run,
+- generates semantic role includes for any queued jobs that have role assignments,
 - runs the equivalent of:
 
 ```powershell
@@ -363,6 +378,47 @@ $gdxin
 display productsData, resourcesData;
 ```
 
+## Semantic Role Assignment
+
+Phase 2 adds an optional semantic layer on top of the reusable generic imports.
+
+In the GUI, selected columns for each import job can now be tagged with roles such as:
+
+- `index`
+- `profit`
+- `capacity`
+- `demand`
+- `cost`
+- `lower_bound`
+- `upper_bound`
+
+These assignments are stored per queued job and exported into generated runtime files:
+
+- `gams/generated_semantic_declarations.gms`
+- `gams/generated_semantic_mapping.gms`
+
+For a queued job with output symbol `productsData`, the generated GAMS layer now produces:
+
+- `requestedSemanticColumn__productsData(semanticRole,*)`
+- `requestedSemanticRole__productsData(semanticRole)`
+- `semanticColumn__productsData(semanticRole,col__productsData)`
+- `semanticValue__productsData(obs__productsData,semanticRole)`
+- `profit__productsData(obs__productsData)`
+- `capacity__productsData(obs__productsData)`
+- `cost__productsData(obs__productsData)`
+- `demand__productsData(obs__productsData)`
+- `lower_bound__productsData(obs__productsData)`
+- `upper_bound__productsData(obs__productsData)`
+
+Important behavior:
+
+- generic named imports such as `productsData(obs,col)` always remain available,
+- semantic mappings are optional and additive,
+- incomplete semantic mappings do not block generic import,
+- the backward-compatible primary symbol `data(obs,col)` is still preserved from the first queued job.
+
+This means semantic role assignment is now available across queued import jobs, not only through the older primary-symbol demo path.
+
 ### How to use `execute_load`
 
 If you prefer runtime loading:
@@ -424,6 +480,10 @@ The repository still includes the earlier demo optimization as a professional ex
   - `capacity(obs)`
   - `cost(obs)`
   - `demand(obs)`
+- the generated Phase 2 semantic layer maps optional GUI-assigned roles for every queued job into job-specific symbols such as:
+  - `profit__productsData(obs__productsData)`
+  - `capacity__productsData(obs__productsData)`
+  - `cost__resourcesData(obs__resourcesData)`
 - `gams/optimization_example.gms` solves a small linear resource-allocation model if the required mapped fields are present.
 - If the required mapped fields are not present, generic import still succeeds and the optimization example is skipped gracefully.
 
@@ -466,8 +526,9 @@ Practical runtime verification:
 - Imported GAMS symbols are currently numeric parameter-style symbols in the standardized form `<symbolName>(obs,col)`.
 - The current `Filter / WHERE` box supports only a conservative simple SQL filter expression; it is not a full SQL editor.
 - The first queued job is treated as the backward-compatible primary symbol `data(obs,col)`.
-- The semantic mapping and demo optimization still operate only on that primary symbol.
+- Semantic role assignment now works across queued jobs, but the older demo optimization still solves only from the backward-compatible primary symbol `data(obs,col)`.
 - Direct automatic inference of richer structures such as `parameter cost(i,t)` is not yet implemented.
+- Semantic roles remain user-assigned metadata; the project does not yet infer richer dimensions such as `cost(i,j)` automatically.
 - Import jobs with nonnumeric selected results cannot currently become GAMS parameters.
 - Local verification of the GAMS run requires a working GAMS installation on the machine.
 
@@ -482,7 +543,7 @@ Practical runtime verification:
 ## Roadmap / Future Improvements
 
 - Infer richer index/value structures automatically when a job clearly has identifier columns plus one value column.
-- Externalize semantic mapping to JSON or YAML configuration instead of the current GAMS include.
+- Externalize semantic role mapping to JSON or YAML configuration instead of the current generated GAMS include.
 - Add per-job preview snapshots inside the basket.
 - Add saved import basket templates for repeated data workflows.
 - Add integration tests against a disposable MySQL instance.

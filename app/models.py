@@ -2,10 +2,20 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 
 import pandas as pd
+
+SEMANTIC_ROLES: tuple[str, ...] = (
+    "index",
+    "profit",
+    "capacity",
+    "demand",
+    "cost",
+    "lower_bound",
+    "upper_bound",
+)
 
 
 @dataclass(slots=True)
@@ -17,6 +27,7 @@ class ImportJob:
     max_rows: int
     symbol_name: str
     where_clause: str = ""
+    semantic_roles: dict[str, str] = field(default_factory=dict)
 
 
 @dataclass(slots=True)
@@ -39,5 +50,7 @@ class ExportArtifacts:
     generated_symbol_include: Path
     generated_example_model: Path
     generated_unload_include: Path
+    generated_semantic_declarations_include: Path
+    generated_semantic_mapping_include: Path
     symbol_names: list[str]
     primary_symbol_name: str

@@ -15,7 +15,7 @@ from sqlalchemy.exc import OperationalError
 
 from .db import DatabaseConfig, MySQLRepository
 from .exporter import ExportArtifacts, ExportError, export_import_jobs, save_preview_csv, validate_gams_symbol_name
-from .models import ImportJob, MaterializedImportJob
+from .models import ImportJob, MaterializedImportJob, SEMANTIC_ROLES
 from .runner import GAMSRunError, GAMSRunResult, run_gams_model
 from .utils import DATA_DIR, GAMS_DIR, PROJECT_ROOT, configure_logging, load_db_config
 
@@ -33,12 +33,14 @@ class MySQLToGAMSApp:
         self.preview_df: pd.DataFrame = pd.DataFrame()
         self.repo: MySQLRepository | None = None
         self.import_jobs: list[ImportJob] = []
+        self.current_role_assignments: dict[str, str] = {}
 
         self.status_var = StringVar(value="Load configuration to begin.")
         self.table_var = StringVar()
         self.max_rows_var = StringVar(value="10")
         self.symbol_name_var = StringVar()
         self.where_var = StringVar()
+        self.semantic_role_var = StringVar(value="index")
 
         self._build_layout()
         self._load_configuration()
@@ -94,9 +96,47 @@ class MySQLToGAMSApp:
         )
         list_scrollbar.grid(row=2, column=4, pady=(10, 6), sticky="nsw")
         self.columns_listbox.config(yscrollcommand=list_scrollbar.set)
+        self.columns_listbox.bind("<<ListboxSelect>>", self._refresh_role_assignments)
+
+        role_frame = ttk.LabelFrame(controls, text="Semantic Roles", padding=10)
+        role_frame.grid(row=3, column=0, columnspan=5, padx=(0, 10), pady=(8, 0), sticky="nsew")
+
+        ttk.Label(role_frame, text="Role").grid(row=0, column=0, sticky="w")
+        self.semantic_role_combo = ttk.Combobox(
+            role_frame,
+            textvariable=self.semantic_role_var,
+            state="readonly",
+            values=list(SEMANTIC_ROLES),
+            width=16,
+        )
+        self.semantic_role_combo.grid(row=0, column=1, padx=(6, 10), sticky="w")
+
+        ttk.Button(
+            role_frame,
+            text="Assign Role To Selected Columns",
+            command=self.assign_role_to_selected_columns,
+        ).grid(row=0, column=2, padx=(0, 8), sticky="w")
+        ttk.Button(
+            role_frame,
+            text="Clear Role From Selected Columns",
+            command=self.clear_role_from_selected_columns,
+        ).grid(row=0, column=3, sticky="w")
+
+        self.roles_tree = ttk.Treeview(
+            role_frame,
+            columns=("column", "role"),
+            show="headings",
+            height=5,
+        )
+        self.roles_tree.heading("column", text="Selected Column")
+        self.roles_tree.heading("role", text="Assigned Role")
+        self.roles_tree.column("column", width=260, anchor="w")
+        self.roles_tree.column("role", width=140, anchor="w")
+        self.roles_tree.grid(row=1, column=0, columnspan=4, pady=(10, 0), sticky="nsew")
+        role_frame.columnconfigure(3, weight=1)
 
         actions_frame = ttk.Frame(controls)
-        actions_frame.grid(row=2, column=5, columnspan=2, padx=(12, 0), pady=(10, 6), sticky="ne")
+        actions_frame.grid(row=2, column=5, columnspan=2, rowspan=2, padx=(12, 0), pady=(10, 6), sticky="ne")
         ttk.Button(actions_frame, text="Preview Current Selection", command=self.preview_data).pack(
             fill="x", pady=(0, 8)
         )
@@ -119,7 +159,7 @@ class MySQLToGAMSApp:
 
         self.basket_tree = ttk.Treeview(
             basket_frame,
-            columns=("symbol", "table", "rows", "filter", "columns"),
+            columns=("symbol", "table", "rows", "filter", "columns", "roles"),
             show="headings",
             height=7,
         )
@@ -128,11 +168,13 @@ class MySQLToGAMSApp:
         self.basket_tree.heading("rows", text="Max Rows")
         self.basket_tree.heading("filter", text="Filter / WHERE")
         self.basket_tree.heading("columns", text="Selected Columns")
+        self.basket_tree.heading("roles", text="Semantic Roles")
         self.basket_tree.column("symbol", width=180, anchor="w")
         self.basket_tree.column("table", width=170, anchor="w")
         self.basket_tree.column("rows", width=80, anchor="center")
-        self.basket_tree.column("filter", width=240, anchor="w")
-        self.basket_tree.column("columns", width=420, anchor="w")
+        self.basket_tree.column("filter", width=220, anchor="w")
+        self.basket_tree.column("columns", width=320, anchor="w")
+        self.basket_tree.column("roles", width=260, anchor="w")
         self.basket_tree.pack(side="left", fill="x", expand=True)
 
         basket_scrollbar = ttk.Scrollbar(
@@ -206,6 +248,7 @@ class MySQLToGAMSApp:
 
         if not self.symbol_name_var.get().strip():
             self.symbol_name_var.set(self._suggest_symbol_name(table_name))
+        self.current_role_assignments.clear()
 
         def task() -> list[str]:
             assert self.repo is not None
@@ -215,6 +258,7 @@ class MySQLToGAMSApp:
             self.columns_listbox.delete(0, END)
             for column_name in columns:
                 self.columns_listbox.insert(END, column_name)
+            self._refresh_role_assignments()
             self.status_var.set(
                 f"Loaded {len(columns)} column(s) for table '{table_name}'."
             )
@@ -267,7 +311,59 @@ class MySQLToGAMSApp:
             max_rows=max_rows,
             symbol_name=symbol_name,
             where_clause=self.where_var.get().strip(),
+            semantic_roles={
+                column_name: role
+                for column_name, role in self.current_role_assignments.items()
+                if column_name in selected_columns
+            },
         )
+
+    def assign_role_to_selected_columns(self) -> None:
+        """Assign the chosen semantic role to the selected columns."""
+        selected_columns = self._selected_columns()
+        if not selected_columns:
+            messagebox.showerror(
+                "Semantic Role Assignment",
+                "Select one or more columns before assigning a semantic role.",
+            )
+            return
+
+        role = self.semantic_role_var.get().strip().lower()
+        for column_name in selected_columns:
+            self.current_role_assignments[column_name] = role
+        self._refresh_role_assignments()
+        self.status_var.set(
+            f"Assigned role '{role}' to {len(selected_columns)} selected column(s)."
+        )
+
+    def clear_role_from_selected_columns(self) -> None:
+        """Remove semantic role assignments from the selected columns."""
+        selected_columns = self._selected_columns()
+        if not selected_columns:
+            messagebox.showerror(
+                "Semantic Role Assignment",
+                "Select one or more columns before clearing semantic roles.",
+            )
+            return
+
+        for column_name in selected_columns:
+            self.current_role_assignments.pop(column_name, None)
+        self._refresh_role_assignments()
+        self.status_var.set("Cleared semantic roles from selected column(s).")
+
+    def _refresh_role_assignments(self, _event: object | None = None) -> None:
+        """Refresh the semantic role table for the current GUI selection."""
+        self.roles_tree.delete(*self.roles_tree.get_children())
+        selected_columns = self._selected_columns()
+        for column_name in selected_columns:
+            self.roles_tree.insert(
+                "",
+                END,
+                values=(
+                    column_name,
+                    self.current_role_assignments.get(column_name, "(none)"),
+                ),
+            )
 
     def add_import_job(self) -> None:
         """Add the current selection to the import basket."""
@@ -320,6 +416,10 @@ class MySQLToGAMSApp:
                     job.max_rows,
                     job.where_clause or "(none)",
                     ", ".join(job.selected_columns),
+                    ", ".join(
+                        f"{column}:{role}" for column, role in sorted(job.semantic_roles.items())
+                    )
+                    or "(none)",
                 ),
             )
 
@@ -408,9 +508,11 @@ class MySQLToGAMSApp:
                 f"Primary backward-compatible symbol: data(obs,col) from '{artifacts.primary_symbol_name}'\n"
                 "Reusable imported symbols created in this run:\n"
                 f"{symbol_lines}\n\n"
+                "Assigned semantic roles are available in the generated semantic mapping include.\n\n"
                 f"GDX data: {run_result.gdx_file}\n"
                 f"Runtime include: {artifacts.generated_runtime_include}\n"
                 f"Symbol include: {artifacts.generated_symbol_include}\n"
+                f"Semantic mapping include: {artifacts.generated_semantic_mapping_include}\n"
                 f"Example consumer: {artifacts.generated_example_model}\n"
                 f"Listing file: {run_result.listing_file}\n"
                 f"Log file: {run_result.log_file}",
