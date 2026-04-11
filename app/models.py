@@ -48,11 +48,15 @@ class ExportArtifacts:
     legacy_long_csv: Path
     job_directory: Path
     manifest_csv: Path
+    reconciliation_catalog_csv: Path
+    semantic_coordination_csv: Path
     generated_runtime_include: Path
     generated_symbol_include: Path
     generated_modeling_helper_include: Path
+    generated_reconciliation_helper_include: Path
     generated_example_model: Path
     generated_multi_job_example_model: Path
+    generated_reconciliation_example_model: Path
     generated_unload_include: Path
     generated_semantic_declarations_include: Path
     generated_semantic_mapping_include: Path

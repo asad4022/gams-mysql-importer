@@ -7,12 +7,14 @@ $title MySQL to GAMS Importer Demo Model
 *   - gams/generated_unload_symbols.gms
 *   - gams/generated_import_symbols.gms
 *   - gams/generated_modeling_helpers.gms
+*   - gams/generated_reconciliation_helpers.gms
 *   - gams/generated_semantic_declarations.gms
 *   - gams/generated_semantic_mapping.gms
 *   - gams/generated_structured_declarations.gms
 *   - gams/generated_structured_assignments.gms
 *   - gams/example_use_imported_symbols.gms
 *   - gams/example_multi_job_integration.gms
+*   - gams/example_reconciled_modeling.gms
 *
 * The first queued import job is also exposed as the backward-compatible
 * primary symbol data(obs,col) so that the existing mapping and demo

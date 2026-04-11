@@ -15,6 +15,10 @@ Phase 4 adds a fourth usability layer for downstream modeling:
 
 - generated helper artifacts that explain how multiple imported jobs fit together in one GAMS model.
 
+Phase 5 adds a fifth assistance layer for downstream alignment:
+
+- explicit reconciliation artifacts that highlight likely shared dimensions, cross-job semantic coordination, and places where manual modeler judgment is still required.
+
 ## Motivation And Problem Solved
 
 Traditional SQL-to-GAMS workflows often leave too much manual work between data selection and model execution:
@@ -73,7 +77,7 @@ High-level flow:
 
 ## Advanced Workflow Summary
 
-The advanced branch now supports one coherent workflow across Phases 1 through 4:
+The advanced branch now supports one coherent workflow across Phases 1 through 5:
 
 1. Build one or more import jobs in the GUI.
 2. Validate each job through the `Pre-Run Readiness` panel.
@@ -85,7 +89,28 @@ The advanced branch now supports one coherent workflow across Phases 1 through 4
    - generic symbols for flexible inspection,
    - semantic symbols for observation-based model meaning,
    - structured symbols for direct model-ready coefficients,
-   - multi-job helper artifacts for combining multiple imported jobs cleanly.
+   - multi-job helper artifacts for combining multiple imported jobs cleanly,
+   - reconciliation helper artifacts for explicit alignment guidance across jobs.
+
+### Recommended advanced workflow
+
+For an advanced user or researcher, the recommended path is:
+
+1. Start by creating one or more import jobs with stable, meaningful output symbol names.
+2. Treat the first successful run as an inspection run:
+   - confirm the preview,
+   - inspect `imported_data.gdx`,
+   - inspect `import_jobs_manifest.csv`,
+   - inspect `imported_symbol_catalog.csv`.
+3. Add semantic roles when the imported columns have durable economic or modeling meaning.
+4. Add structured index and value selections only when you are confident about the intended direct parameter structure.
+5. Use `generated_modeling_helpers.gms` when combining multiple jobs in one downstream model.
+6. Use `generated_reconciliation_helpers.gms`, `job_reconciliation_catalog.csv`, and `semantic_coordination_catalog.csv` before making assumptions about shared dimensions across jobs.
+7. Build your downstream GAMS model using the lightest layer that is sufficient:
+   - generic first,
+   - semantic second,
+   - structured third,
+   - reconciliation helpers whenever multiple jobs may need coordination.
 
 ## Folder Structure
 
@@ -126,16 +151,20 @@ Generated at runtime:
 
 - `data/import_jobs/<symbol>.csv`
 - `data/import_jobs_manifest.csv`
+- `data/job_reconciliation_catalog.csv`
+- `data/semantic_coordination_catalog.csv`
 - `data/imported_data.gdx`
 - `data/gams_run.lst`
 - `data/gams_run.log`
 - `gams/generated_import_runtime.gms`
 - `gams/generated_import_symbols.gms`
 - `gams/generated_modeling_helpers.gms`
+- `gams/generated_reconciliation_helpers.gms`
 - `gams/generated_unload_symbols.gms`
 - `gams/generated_structured_declarations.gms`
 - `gams/generated_structured_assignments.gms`
 - `gams/example_multi_job_integration.gms`
+- `gams/example_reconciled_modeling.gms`
 - `gams/example_use_imported_symbols.gms` may be refreshed to reflect the current basket
 
 ## Prerequisites
@@ -271,12 +300,15 @@ Other important runtime outputs:
 - `data/exported_data_long.csv`
 - `data/import_jobs/<symbol>.csv`
 - `data/import_jobs_manifest.csv`
+- `data/job_reconciliation_catalog.csv`
+- `data/semantic_coordination_catalog.csv`
 - `data/imported_symbol_catalog.csv`
 - `data/gams_run.lst`
 - `data/gams_run.log`
 - `gams/generated_import_runtime.gms`
 - `gams/generated_import_symbols.gms`
 - `gams/generated_modeling_helpers.gms`
+- `gams/generated_reconciliation_helpers.gms`
 - `gams/generated_semantic_declarations.gms`
 - `gams/generated_semantic_mapping.gms`
 - `gams/generated_structured_declarations.gms`
@@ -291,6 +323,7 @@ Meaning of the key files:
 - `generated_import_runtime.gms`: generated import declarations and Connect block for the current run
 - `generated_import_symbols.gms`: helper include for later `$gdxin` / `$load`
 - `generated_modeling_helpers.gms`: generated job catalog and symbol mapping helper for downstream multi-job models
+- `generated_reconciliation_helpers.gms`: generated reconciliation guidance for inspecting likely shared dimensions and semantic coordination
 - `generated_semantic_declarations.gms`: generated declarations for per-job semantic role symbols
 - `generated_semantic_mapping.gms`: generated semantic role assignments and mapped per-job parameters
 - `generated_structured_declarations.gms`: generated declarations for direct structured sets and parameters
@@ -299,6 +332,8 @@ Meaning of the key files:
 - `gams_run.lst`: listing file for inspecting execution details
 - `gams_run.log`: log file for a concise execution trace
 - `import_jobs_manifest.csv`: job-level summary showing generic, semantic, and structured outputs for each queued import
+- `job_reconciliation_catalog.csv`: pairwise reconciliation report showing likely shared dimensions, compatibility signals, and warnings
+- `semantic_coordination_catalog.csv`: role-oriented report showing which jobs currently provide `profit`, `capacity`, `demand`, `cost`, and related semantic signals
 - `imported_symbol_catalog.csv`: row-per-symbol catalog for downstream modeling and debugging
 - `Pre-Run Readiness`: form-level summary that helps catch missing numeric columns and filter issues before export
 - `Post-Run Results`: artifact inventory with the main output file paths from the latest run
@@ -457,9 +492,9 @@ This is the intended bridge:
 
 This is the core reusable bridge.
 
-### When to use generic vs semantic vs structured
+### When to use each layer
 
-Use the three symbol layers for different modeling situations:
+Use the generated layers for different modeling situations:
 
 - `generic`
   Use when you want maximum flexibility or when the data structure is still exploratory.
@@ -470,6 +505,12 @@ Use the three symbol layers for different modeling situations:
 - `structured`
   Use when you explicitly know the index columns and want direct model-ready parameters such as `param(i)` or `param(i,j)`.
   Example: `productsData__profit(structuredIndex1__productsData)`
+- `multi-job integration`
+  Use when you are working with several imported jobs and need generated metadata that explains what each job produced.
+  Example artifacts: `generated_modeling_helpers.gms`, `import_jobs_manifest.csv`
+- `reconciliation assistance`
+  Use when multiple jobs may be related and you want explicit signals about likely shared dimensions, complementary roles, and warnings.
+  Example artifacts: `generated_reconciliation_helpers.gms`, `job_reconciliation_catalog.csv`
 
 The recommended workflow is:
 
@@ -477,10 +518,11 @@ The recommended workflow is:
 2. Add semantic roles when the columns have stable meaning.
 3. Add structured index/value assignments when you want direct downstream model coefficients.
 4. Use the Phase 4 helper artifacts when you want to combine two or more imported jobs in one downstream model.
+5. Use the Phase 5 reconciliation artifacts before assuming that two jobs share the same downstream domain.
 
 ### Layering at a glance
 
-For each queued basket item, the generated outputs now fit into four practical layers:
+For each queued basket item, the generated outputs now fit into five practical layers:
 
 - `generic imported symbols`
   Example: `productsData(obs,col)`
@@ -494,6 +536,31 @@ For each queued basket item, the generated outputs now fit into four practical l
 - `multi-job downstream integration artifacts`
   Examples: `gams/generated_modeling_helpers.gms`, `data/import_jobs_manifest.csv`, `data/imported_symbol_catalog.csv`
   Use these when you want to understand and combine multiple imported jobs in one model without guessing what was generated.
+- `reconciliation and coordination artifacts`
+  Examples: `gams/generated_reconciliation_helpers.gms`, `data/job_reconciliation_catalog.csv`, `data/semantic_coordination_catalog.csv`
+  Use these when jobs look related and you want explicit help inspecting whether shared dimensions or semantic coordination are plausible.
+
+### Generated artifact families
+
+The generated runtime artifacts are easiest to understand in families:
+
+- `core import handoff`
+  `data/imported_data.gdx`, `gams/generated_import_runtime.gms`, `gams/generated_import_symbols.gms`
+- `semantic layer`
+  `gams/generated_semantic_declarations.gms`, `gams/generated_semantic_mapping.gms`
+- `structured layer`
+  `gams/generated_structured_declarations.gms`, `gams/generated_structured_assignments.gms`
+- `multi-job coordination layer`
+  `gams/generated_modeling_helpers.gms`, `data/import_jobs_manifest.csv`, `data/imported_symbol_catalog.csv`
+- `reconciliation assistance layer`
+  `gams/generated_reconciliation_helpers.gms`, `data/job_reconciliation_catalog.csv`, `data/semantic_coordination_catalog.csv`
+
+This naming scheme reflects intent:
+
+- `generated_...gms` files are runtime helper includes for the current basket
+- `...catalog.csv` files are human-readable inspection artifacts
+- `...manifest.csv` is the job-level run summary
+- `example_...gms` files demonstrate downstream use patterns for the current basket
 
 ### How imported symbols are named
 
@@ -714,6 +781,110 @@ This example intentionally combines:
 
 The generated file `gams/example_multi_job_integration.gms` provides the same pattern for the current basket.
 
+### How the generated examples fit together
+
+The generated and static examples are meant to be read in this order:
+
+1. `gams/example_use_imported_symbols.gms`
+   Use this first when you want the simplest reusable-symbol pattern.
+2. `gams/example_use_structured_symbols.gms`
+   Use this when one basket item has enough explicit structure for direct model-ready parameters.
+3. `gams/example_multi_job_integration.gms`
+   Use this when several imported jobs must coexist in one downstream model.
+4. `gams/example_reconciled_modeling.gms`
+   Use this when several jobs may be related and you want explicit reconciliation guidance before aligning them.
+
+Together these examples tell a progression:
+
+- inspect and load imported symbols,
+- move to direct structured use when appropriate,
+- combine multiple jobs,
+- then add reconciliation-aware modeling assistance when cross-job alignment matters.
+
+## Shared-Dimension Reconciliation And Modeling Assistance
+
+Phase 5 adds explicit downstream alignment assistance without performing hidden joins or automatic domain merges.
+
+For each run, the exporter now also produces:
+
+- `gams/generated_reconciliation_helpers.gms`
+- `data/job_reconciliation_catalog.csv`
+- `data/semantic_coordination_catalog.csv`
+- `gams/example_reconciled_modeling.gms`
+
+These artifacts help answer questions such as:
+
+1. Which jobs appear to share index structure?
+2. Which jobs use the same source column names or semantic index labels?
+3. Which jobs provide complementary semantic roles such as `profit`, `capacity`, `demand`, or `cost`?
+4. Which job pairs look similar but still require manual downstream judgment?
+
+### What reconciliation means here
+
+In this project, reconciliation does **not** mean automatic joining or silent dimension merging.
+
+It means the exporter provides explicit signals based on information the user already supplied:
+
+- structured index selections
+- semantic `index` role assignments
+- matching selected source column names
+- compatible structured ranks
+- cross-job semantic role availability
+
+These signals are advisory. They help the modeler inspect likely relationships, but the downstream GAMS model still decides how to align or combine jobs.
+
+### Generated reconciliation helper include
+
+`gams/generated_reconciliation_helpers.gms` declares helper sets and parameters such as:
+
+- `reconcilableJobPair(importJob,importJob)`
+- `sharedDimensionCandidate(importJob,importJob,*)`
+- `sharedSemanticRole(importJob,importJob,coordinationRole)`
+- `complementarySemanticRole(importJob,importJob,coordinationRole)`
+- `jobProvidesSemanticRole(importJob,coordinationRole)`
+- `structuredCompatibilityNote(importJob,importJob,*)`
+- `reconciliationWarning(importJob,importJob,*)`
+- `recommendedCoordinationHint(importJob,importJob,*)`
+- `sharedDimensionScore(importJob,importJob)`
+- `sharedSemanticRoleCount(importJob,importJob)`
+- `structuredRankGap(importJob,importJob)`
+- `structuredRankCompatible(importJob,importJob)`
+
+Use these helpers to inspect the current basket before building a downstream model that assumes shared domains.
+
+### When reconciliation is safe versus manual
+
+Reconciliation is more trustworthy when:
+
+- two jobs share explicit structured index names
+- two jobs share semantic `index` assignments on the same source labels
+- two jobs expose complementary semantic roles that you intentionally want to use together
+
+Manual inspection is still required when:
+
+- jobs only share generic source column names
+- structured ranks match but the index names differ
+- roles are complementary but there is no clear shared domain
+- the helper catalogs emit warnings or weak compatibility scores
+
+### Example Phase 5 downstream flow
+
+The generated file `gams/example_reconciled_modeling.gms` demonstrates a Phase 5 downstream pattern:
+
+- load imported symbols
+- load multi-job helper metadata
+- load reconciliation helper metadata
+- inspect likely reconcilable job pairs
+- compute semantic totals such as profit, capacity, demand, and cost across different jobs
+- form simple coordinated signals such as margin or capacity-demand gaps
+
+This Phase 5 example is intentionally still conservative:
+
+- it uses reconciliation helpers for inspection and assistance,
+- it does not auto-join jobs,
+- it does not silently assume shared dimensions,
+- it leaves the final modeling alignment decision with the downstream GAMS modeler.
+
 ### Naming convention summary
 
 The current naming scheme is designed to be predictable:
@@ -725,6 +896,10 @@ The current naming scheme is designed to be predictable:
   - `gams/generated_modeling_helpers.gms`
   - `data/import_jobs_manifest.csv`
   - `data/imported_symbol_catalog.csv`
+- reconciliation helper files:
+  - `gams/generated_reconciliation_helpers.gms`
+  - `data/job_reconciliation_catalog.csv`
+  - `data/semantic_coordination_catalog.csv`
 
 This keeps the original import identity visible while still making derived symbols easy to recognize in GAMS Studio and downstream scripts.
 
