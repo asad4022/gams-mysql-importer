@@ -1,6 +1,11 @@
 $title Example Use Of Structured Imported Symbols
 
 * This example demonstrates the Phase 3 structured-symbol workflow.
+* It is intentionally focused on the direct structured layer only.
+* In the full advanced workflow, the same run can also produce:
+*   - a generic imported symbol
+*   - semantic derived symbols
+*   - multi-job helper artifacts for downstream integration
 * It assumes the GUI was used to export a basket item with:
 *   - Output symbol: productsData
 *   - Structured index column: sku

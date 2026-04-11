@@ -6,15 +6,18 @@ $title MySQL to GAMS Importer Demo Model
 *   - gams/generated_import_runtime.gms
 *   - gams/generated_unload_symbols.gms
 *   - gams/generated_import_symbols.gms
+*   - gams/generated_modeling_helpers.gms
 *   - gams/generated_semantic_declarations.gms
 *   - gams/generated_semantic_mapping.gms
 *   - gams/generated_structured_declarations.gms
 *   - gams/generated_structured_assignments.gms
 *   - gams/example_use_imported_symbols.gms
+*   - gams/example_multi_job_integration.gms
 *
 * The first queued import job is also exposed as the backward-compatible
 * primary symbol data(obs,col) so that the existing mapping and demo
-* optimization remain available.
+* optimization remain available, while downstream models can also reuse
+* generic, semantic, structured, and multi-job helper artifacts.
 
 $if not exist "gams/generated_import_runtime.gms" $abort "No generated import configuration found. Add import jobs in the GUI and export again."
 $if not exist "gams/generated_unload_symbols.gms" $abort "No generated unload symbol list found. Add import jobs in the GUI and export again."

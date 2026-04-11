@@ -11,6 +11,10 @@ Phase 3 adds an optional third layer when the user provides enough structure inf
 
 - direct derived parameters such as `productsData__profit(i)` or `arcData__cost(i,j)` built from explicit index and value column choices.
 
+Phase 4 adds a fourth usability layer for downstream modeling:
+
+- generated helper artifacts that explain how multiple imported jobs fit together in one GAMS model.
+
 ## Motivation And Problem Solved
 
 Traditional SQL-to-GAMS workflows often leave too much manual work between data selection and model execution:
@@ -66,6 +70,22 @@ High-level flow:
 8. Generate GAMS include files that declare and document the imported symbols for the current run.
 9. Run `gams gams/model.gms`.
 10. Save all imported symbols to `data/imported_data.gdx` for reuse in other GAMS scripts.
+
+## Advanced Workflow Summary
+
+The advanced branch now supports one coherent workflow across Phases 1 through 4:
+
+1. Build one or more import jobs in the GUI.
+2. Validate each job through the `Pre-Run Readiness` panel.
+3. Optionally assign semantic roles such as `profit`, `capacity`, or `cost`.
+4. Optionally define structured index and value columns for direct GAMS parameters.
+5. Export the full basket and run GAMS once.
+6. Inspect the resulting artifacts in the `Post-Run Results` panel, GAMS Studio, `data/import_jobs_manifest.csv`, and `data/imported_symbol_catalog.csv`.
+7. Reuse the generated symbols in downstream GAMS models through:
+   - generic symbols for flexible inspection,
+   - semantic symbols for observation-based model meaning,
+   - structured symbols for direct model-ready coefficients,
+   - multi-job helper artifacts for combining multiple imported jobs cleanly.
 
 ## Folder Structure
 
@@ -456,6 +476,24 @@ The recommended workflow is:
 1. Start with generic imports for safety and traceability.
 2. Add semantic roles when the columns have stable meaning.
 3. Add structured index/value assignments when you want direct downstream model coefficients.
+4. Use the Phase 4 helper artifacts when you want to combine two or more imported jobs in one downstream model.
+
+### Layering at a glance
+
+For each queued basket item, the generated outputs now fit into four practical layers:
+
+- `generic imported symbols`
+  Example: `productsData(obs,col)`
+  Use these when the imported data should stay close to the original SQL selection.
+- `semantic derived symbols`
+  Example: `profit__productsData(obs__productsData)`
+  Use these when selected columns have stable business or optimization meaning, but you still want an observation-based structure.
+- `structured derived symbols`
+  Example: `productsData__profit(structuredIndex1__productsData)`
+  Use these when you explicitly know the desired direct model dimensions.
+- `multi-job downstream integration artifacts`
+  Examples: `gams/generated_modeling_helpers.gms`, `data/import_jobs_manifest.csv`, `data/imported_symbol_catalog.csv`
+  Use these when you want to understand and combine multiple imported jobs in one model without guessing what was generated.
 
 ### How imported symbols are named
 
@@ -675,6 +713,20 @@ This example intentionally combines:
 - one structured parameter from the second job
 
 The generated file `gams/example_multi_job_integration.gms` provides the same pattern for the current basket.
+
+### Naming convention summary
+
+The current naming scheme is designed to be predictable:
+
+- generic symbol: `<symbolName>(obs,col)`
+- semantic symbol: `<role>__<symbolName>(obs__<symbolName>)`
+- structured symbol: `<symbolName>__<valueColumn>(structuredIndex1__<symbolName>, ...)`
+- multi-job helper files:
+  - `gams/generated_modeling_helpers.gms`
+  - `data/import_jobs_manifest.csv`
+  - `data/imported_symbol_catalog.csv`
+
+This keeps the original import identity visible while still making derived symbols easy to recognize in GAMS Studio and downstream scripts.
 
 ## Semantic Role Assignment
 
