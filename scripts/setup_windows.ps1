@@ -1,5 +1,6 @@
 $ErrorActionPreference = "Stop"
 
+# Set up the stable importer with Python 3.11 while preserving the current Windows workflow.
 $projectRoot = Split-Path -Parent $PSScriptRoot
 $venvPath = Join-Path $projectRoot ".venv"
 
@@ -45,7 +46,18 @@ if (-not (Test-Path $venvPath)) {
 & $pythonExe -m pip install --upgrade pip
 & $pythonExe -m pip install -r (Join-Path $projectRoot "requirements.txt")
 
+$gamsCommand = Get-Command gams -ErrorAction SilentlyContinue
+if ($gamsCommand) {
+    Write-Host "Detected GAMS on PATH: $($gamsCommand.Source)"
+}
+else {
+    Write-Host "GAMS was not found on PATH."
+    Write-Host "If GAMS is installed, copy config\\app_config.example.json to config\\app_config.json and set gams_executable."
+}
+
 Write-Host ""
 Write-Host "Environment setup complete."
 Write-Host "Activate with: .\.venv\Scripts\Activate.ps1"
+Write-Host "Verify tkinter with: .\.venv\Scripts\python.exe -c `"import tkinter; print('tkinter ok')`""
+Write-Host "Verify GAMS with: Get-Command gams"
 Write-Host "Run with: .\.venv\Scripts\python.exe -m app.gui_importer"

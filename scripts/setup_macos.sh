@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+# Set up the stable importer with Python 3.11 and verify tkinter early.
 script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 project_root="$(cd "${script_dir}/.." && pwd)"
 venv_path="${project_root}/.venv"
@@ -59,7 +60,16 @@ fi
 "${venv_python}" -m pip install --upgrade pip
 "${venv_python}" -m pip install -r "${project_root}/requirements.txt"
 
+if command -v gams >/dev/null 2>&1; then
+    echo "Detected GAMS on PATH: $(command -v gams)"
+else
+    echo "GAMS was not found on PATH."
+    echo "If GAMS is installed, create config/app_config.json from config/app_config.example.json and set gams_executable."
+fi
+
 echo
 echo "Environment setup complete."
 echo "Activate with: source .venv/bin/activate"
+echo "Verify tkinter with: .venv/bin/python -c \"import tkinter; print('tkinter ok')\""
+echo "Verify GAMS with: command -v gams"
 echo "Run with: ./scripts/run_app.sh"

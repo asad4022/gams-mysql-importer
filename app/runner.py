@@ -282,13 +282,21 @@ def run_gams_model(
         troubleshooting_lines = [
             "GAMS executable could not be found.",
             "",
-            "Set config/app_config.json -> gams_executable,",
-            f"or set the {GAMS_EXECUTABLE_ENV_VAR} environment variable,",
-            "or make sure 'gams' is available on PATH.",
+            "Use one of these options:",
+            "1. Set config/app_config.json -> gams_executable",
+            f"2. Set the {GAMS_EXECUTABLE_ENV_VAR} environment variable",
+            "3. Make sure 'gams' is available on PATH",
         ]
         if _platform_name() == "Windows":
             troubleshooting_lines.append(
-                "A standard Windows installation often looks like C:\\GAMS\\<version>\\gams.exe."
+                "Windows example: C:\\GAMS\\<version>\\gams.exe"
+            )
+        elif _platform_name() == "Darwin":
+            troubleshooting_lines.append(
+                "macOS example: /Applications/GAMS/<version>/gams"
+            )
+            troubleshooting_lines.append(
+                "If GAMS is installed but not on PATH, copy config/app_config.example.json to config/app_config.json and set gams_executable."
             )
         raise GAMSRunError(
             "\n".join(troubleshooting_lines)
