@@ -1,7 +1,8 @@
-"""Shared utilities for configuration and logging."""
+"""Shared utilities for configuration, paths, and logging."""
 
 from __future__ import annotations
 
+from dataclasses import dataclass
 import json
 import logging
 from pathlib import Path
@@ -14,6 +15,15 @@ DATA_DIR = PROJECT_ROOT / "data"
 GAMS_DIR = PROJECT_ROOT / "gams"
 
 APP_LOGGER_NAME = "mysql_to_gams_importer"
+RUNTIME_CONFIG_KEYS = {"gams_executable", "gams_studio_path"}
+
+
+@dataclass(slots=True)
+class RuntimeConfig:
+    """Optional local runtime settings for GAMS integration."""
+
+    gams_executable: Path | None = None
+    gams_studio_path: Path | None = None
 
 
 def configure_logging(log_file: Path | None = None) -> logging.Logger:
@@ -89,3 +99,53 @@ def load_db_config() -> tuple[dict[str, Any], list[str]]:
         )
 
     return config, warnings
+
+
+def _load_json_file(path: Path) -> dict[str, Any]:
+    with path.open("r", encoding="utf-8") as handle:
+        data = json.load(handle)
+
+    if not isinstance(data, dict):
+        raise ValueError(f"Configuration file must contain a JSON object: {path}")
+
+    return data
+
+
+def _resolve_optional_path(value: Any) -> Path | None:
+    normalized = str(value or "").strip()
+    if not normalized:
+        return None
+
+    path = Path(normalized).expanduser()
+    if not path.is_absolute():
+        path = PROJECT_ROOT / path
+
+    return path.resolve(strict=False)
+
+
+def load_runtime_config() -> tuple[RuntimeConfig, list[str]]:
+    """Load optional local runtime settings for GAMS executable discovery."""
+    local_config = CONFIG_DIR / "app_config.json"
+    example_config = CONFIG_DIR / "app_config.example.json"
+
+    selected_path = local_config if local_config.exists() else example_config
+    if not selected_path.exists():
+        return RuntimeConfig(), []
+
+    config = _load_json_file(selected_path)
+    warnings: list[str] = []
+
+    unknown_keys = sorted(set(config).difference(RUNTIME_CONFIG_KEYS))
+    if unknown_keys:
+        warnings.append(
+            "Ignoring unknown keys in runtime configuration: "
+            + ", ".join(unknown_keys)
+        )
+
+    return (
+        RuntimeConfig(
+            gams_executable=_resolve_optional_path(config.get("gams_executable")),
+            gams_studio_path=_resolve_optional_path(config.get("gams_studio_path")),
+        ),
+        warnings,
+    )

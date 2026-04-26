@@ -17,7 +17,7 @@ from .db import DatabaseConfig, MySQLRepository
 from .exporter import ExportArtifacts, ExportError, export_import_jobs, save_preview_csv, validate_gams_symbol_name
 from .models import ImportJob, MaterializedImportJob
 from .runner import GAMSRunError, GAMSRunResult, run_gams_model
-from .utils import DATA_DIR, GAMS_DIR, PROJECT_ROOT, configure_logging, load_db_config
+from .utils import DATA_DIR, GAMS_DIR, PROJECT_ROOT, RuntimeConfig, configure_logging, load_db_config, load_runtime_config
 
 
 class MySQLToGAMSApp:
@@ -165,16 +165,21 @@ class MySQLToGAMSApp:
     def _load_configuration(self) -> None:
         try:
             config_data, warnings = load_db_config()
+            runtime_config, runtime_warnings = load_runtime_config()
             self.config = DatabaseConfig(**config_data)
-            if warnings:
-                self.status_var.set(warnings[0])
-                self.logger.warning(warnings[0])
+            self.runtime_config = runtime_config
+            combined_warnings = warnings + runtime_warnings
+            if combined_warnings:
+                self.status_var.set(combined_warnings[0])
+                for warning in combined_warnings:
+                    self.logger.warning(warning)
             else:
                 self.status_var.set("Configuration loaded successfully.")
         except Exception as exc:
             self.logger.exception("Failed to load configuration")
             messagebox.showerror("Configuration Error", str(exc))
             self.status_var.set("Configuration could not be loaded.")
+            self.runtime_config = RuntimeConfig()
 
     def connect_to_database(self) -> None:
         if not hasattr(self, "config"):
@@ -380,7 +385,11 @@ class MySQLToGAMSApp:
 
             artifacts = export_import_jobs(materialized_jobs, DATA_DIR, GAMS_DIR)
             self.preview_df = materialized_jobs[0].dataframe
-            run_result = run_gams_model(PROJECT_ROOT, GAMS_DIR / "model.gms")
+            run_result = run_gams_model(
+                PROJECT_ROOT,
+                GAMS_DIR / "model.gms",
+                self.runtime_config,
+            )
             return artifacts, run_result
 
         def on_success(result: tuple[ExportArtifacts, GAMSRunResult]) -> None:
@@ -389,11 +398,7 @@ class MySQLToGAMSApp:
             self.status_var.set(
                 f"Exported {len(artifacts.symbol_names)} import job(s) and ran GAMS successfully."
             )
-            studio_note = (
-                "GAMS Studio was opened automatically on the model, listing, and GDX data files."
-                if run_result.studio_opened
-                else "GAMS Studio could not be opened automatically, but the GAMS artifacts were created successfully."
-            )
+            studio_note = run_result.studio_message
             optimization_note = (
                 run_result.optimization_message + "\n\n"
                 if run_result.optimization_message
@@ -408,6 +413,7 @@ class MySQLToGAMSApp:
                 f"Primary backward-compatible symbol: data(obs,col) from '{artifacts.primary_symbol_name}'\n"
                 "Reusable imported symbols created in this run:\n"
                 f"{symbol_lines}\n\n"
+                f"GAMS executable: {run_result.gams_executable}\n"
                 f"GDX data: {run_result.gdx_file}\n"
                 f"Runtime include: {artifacts.generated_runtime_include}\n"
                 f"Symbol include: {artifacts.generated_symbol_include}\n"

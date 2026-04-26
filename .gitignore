@@ -12,6 +12,7 @@ venv/
 
 # Local configuration with secrets
 config/db_config.json
+config/app_config.json
 
 # Logs and exported data
 data/*.csv
